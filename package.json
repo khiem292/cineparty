@@ -8,11 +8,12 @@
     "start": "node server.js --prod"
   },
   "dependencies": {
+    "hls.js": "^1.5.17",
     "lucide-react": "^0.454.0",
     "next": "^15.1.0",
+    "peerjs": "^1.5.5",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "hls.js": "^1.5.17",
     "socket.io": "^4.8.1",
     "socket.io-client": "^4.8.1"
   }

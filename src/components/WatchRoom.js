@@ -1,8 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef, use } from "react";
-import { useRouter } from "next/navigation";
-import { io } from "socket.io-client";
+import { useEffect, useState, useRef } from "react";
 import {
   Film,
   Copy,
@@ -24,16 +22,14 @@ import {
   Lock,
   Unlock,
   Sparkles,
-  ExternalLink,
 } from "lucide-react";
 import { parseMediaInput, formatTime, parseTimeInput } from "@/lib/urlParser";
+import { createP2PRoomClient } from "@/lib/p2pRoomClient";
 import SyncedVideoPlayer from "@/components/SyncedVideoPlayer";
 import ScreenShareStage from "@/components/ScreenShareStage";
 
-export default function RoomPage({ params }) {
-  const resolvedParams = use(params);
-  const roomId = (resolvedParams?.roomId || "ROOM").toUpperCase();
-  const router = useRouter();
+export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
+  const roomId = (rawRoomId || "ROOM").toUpperCase();
 
   const [socket, setSocket] = useState(null);
   const [username, setUsername] = useState("");
@@ -91,13 +87,11 @@ export default function RoomPage({ params }) {
     }
   }, []);
 
-  // Connect to Socket.io once username is ready
+  // Connect P2P Room Client once username is ready
   useEffect(() => {
     if (!username) return;
 
-    const s = io({
-      path: "/socket.io",
-    });
+    const s = createP2PRoomClient(roomId);
     setSocket(s);
 
     s.on("connect", () => {
@@ -140,14 +134,22 @@ export default function RoomPage({ params }) {
       setUsers(newUsers || []);
     });
 
-    s.on("media-changed", ({ media: newMedia, playback: newPlayback, screenSharerId: sharerId, screenSharerName: sharerName }) => {
-      setMedia(newMedia);
-      setUrlInput(newMedia.rawInput || newMedia.url || "");
-      setPlayback(newPlayback);
-      setDisplayTimer(newPlayback.currentTime || 0);
-      setScreenSharerId(sharerId || null);
-      setScreenSharerName(sharerName || null);
-    });
+    s.on(
+      "media-changed",
+      ({
+        media: newMedia,
+        playback: newPlayback,
+        screenSharerId: sharerId,
+        screenSharerName: sharerName,
+      }) => {
+        setMedia(newMedia);
+        setUrlInput(newMedia.rawInput || newMedia.url || "");
+        setPlayback(newPlayback);
+        setDisplayTimer(newPlayback.currentTime || 0);
+        setScreenSharerId(sharerId || null);
+        setScreenSharerName(sharerName || null);
+      }
+    );
 
     s.on("sandbox-toggled", ({ sandbox }) => {
       setMedia((prev) => ({ ...prev, sandbox }));
@@ -161,7 +163,6 @@ export default function RoomPage({ params }) {
       });
       setDisplayTimer(newPlayback.currentTime || 0);
 
-      // Also attempt to send standard postMessage commands to iframe players that support it
       if (iframeRef.current && iframeRef.current.contentWindow) {
         try {
           const win = iframeRef.current.contentWindow;
@@ -226,12 +227,10 @@ export default function RoomPage({ params }) {
     };
   }, [username, roomId]);
 
-  // Auto-scroll chat
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Update shared reference timer every second when playback.isPlaying is true
   useEffect(() => {
     if (!playback.isPlaying) {
       setDisplayTimer(playback.currentTime || 0);
@@ -248,7 +247,6 @@ export default function RoomPage({ params }) {
     return () => clearInterval(interval);
   }, [playback]);
 
-  // Load media from URL input
   const handleLoadMedia = (e, customUrl) => {
     if (e) e.preventDefault();
     if (!canControl || !socket) return;
@@ -257,7 +255,6 @@ export default function RoomPage({ params }) {
     const parsed = parseMediaInput(raw);
     if (!parsed) return;
 
-    // If I was sharing screen, stop it first
     if (localScreenStream) {
       stopLocalScreenShare();
     }
@@ -268,7 +265,6 @@ export default function RoomPage({ params }) {
     });
   };
 
-  // Start WebRTC Screen Share
   const handleStartScreenShare = async () => {
     if (!canControl || !socket) return;
     try {
@@ -285,7 +281,6 @@ export default function RoomPage({ params }) {
         },
       });
 
-      // Detect when user clicks browser's native "Stop sharing" button
       const videoTrack = stream.getVideoTracks()[0];
       if (videoTrack) {
         videoTrack.onended = () => {
@@ -296,7 +291,6 @@ export default function RoomPage({ params }) {
       setLocalScreenStream(stream);
       socket.emit("start-screen-share", { roomId });
     } catch (err) {
-      // User cancelled or browser denied
       console.warn("Không bắt đầu chia sẻ màn hình:", err);
     }
   };
@@ -348,7 +342,8 @@ export default function RoomPage({ params }) {
   };
 
   const handleCopyInvite = () => {
-    const inviteUrl = `${window.location.origin}/room/${roomId}`;
+    const baseUrl = `${window.location.origin}${window.location.pathname}`;
+    const inviteUrl = `${baseUrl}?room=${roomId}`;
     navigator.clipboard.writeText(inviteUrl);
     setCopiedInvite(true);
     setTimeout(() => setCopiedInvite(false), 2200);
@@ -388,7 +383,8 @@ export default function RoomPage({ params }) {
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              const finalName = tempName.trim() || `Khách_${Math.floor(100 + Math.random() * 900)}`;
+              const finalName =
+                tempName.trim() || `Khách_${Math.floor(100 + Math.random() * 900)}`;
               localStorage.setItem("cineparty_username", finalName);
               setUsername(finalName);
               setNeedsNameModal(false);
@@ -416,14 +412,18 @@ export default function RoomPage({ params }) {
 
   return (
     <div className="room-layout">
-      {/* Top Room Header */}
       <header className="room-header">
         <div className="room-header-left">
           <button
             type="button"
-            onClick={() => router.push("/")}
+            onClick={onLeaveRoom}
             className="brand-logo"
-            style={{ background: "transparent", border: "none", cursor: "pointer", color: "inherit" }}
+            style={{
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              color: "inherit",
+            }}
             title="Về trang chủ"
           >
             <div className="brand-icon" style={{ width: "32px", height: "32px" }}>
@@ -456,7 +456,11 @@ export default function RoomPage({ params }) {
               className="btn-secondary"
               title="Chỉnh quyền điều khiển phim trong phòng"
             >
-              {allowAllControl ? <Unlock size={15} color="#10b981" /> : <Lock size={15} color="#f59e0b" />}
+              {allowAllControl ? (
+                <Unlock size={15} color="#10b981" />
+              ) : (
+                <Lock size={15} color="#f59e0b" />
+              )}
               <span>{allowAllControl ? "Mọi người được chỉnh" : "Chỉ Chủ phòng chỉnh"}</span>
             </button>
           )}
@@ -468,13 +472,13 @@ export default function RoomPage({ params }) {
         </div>
       </header>
 
-      {/* Main Body */}
       <div className="room-body">
-        {/* Left Stage Column */}
         <div className="stage-column">
-          {/* Media Input & Screen Share Toolbar */}
           <div className="url-toolbar">
-            <form onSubmit={(e) => handleLoadMedia(e)} style={{ display: "flex", flex: 1, gap: "8px", minWidth: "260px" }}>
+            <form
+              onSubmit={(e) => handleLoadMedia(e)}
+              style={{ display: "flex", flex: 1, gap: "8px", minWidth: "260px" }}
+            >
               <div className="url-input-group">
                 <Link2 size={16} color="var(--text-secondary)" />
                 <input
@@ -520,9 +524,7 @@ export default function RoomPage({ params }) {
             )}
           </div>
 
-          {/* Video / Iframe / ScreenShare Viewport */}
           <div className="player-viewport">
-            {/* 3-2-1 Countdown Overlay for Synchronized Play */}
             {countdownValue && (
               <div className="countdown-overlay">
                 <div className="countdown-number">
@@ -536,17 +538,17 @@ export default function RoomPage({ params }) {
               </div>
             )}
 
-            {/* Floating Emoji Reactions */}
             <div className="floating-reactions-container">
               {floatingReactions.map((r) => (
                 <div key={r.id} className="floating-reaction-pill">
                   <span style={{ fontSize: "1.25rem" }}>{r.emoji}</span>
-                  <span style={{ color: "var(--text-secondary)", fontWeight: 600 }}>{r.senderName}</span>
+                  <span style={{ color: "var(--text-secondary)", fontWeight: 600 }}>
+                    {r.senderName}
+                  </span>
                 </div>
               ))}
             </div>
 
-            {/* Stage Content by Media Type */}
             {media.type === "empty" && (
               <div style={{ maxWidth: "560px", textAlign: "center", padding: "28px" }}>
                 <div
@@ -568,16 +570,33 @@ export default function RoomPage({ params }) {
                 <h2 style={{ fontSize: "1.4rem", fontWeight: 800, marginBottom: "10px" }}>
                   Rạp chiếu #{roomId} đã sẵn sàng!
                 </h2>
-                <p style={{ color: "var(--text-secondary)", fontSize: "0.92rem", lineHeight: 1.6, marginBottom: "22px" }}>
-                  Dán <strong>link phim nhúng (Iframe)</strong>, link <strong>.m3u8 / .mp4 / YouTube</strong> lên thanh công cụ phía trên, hoặc chọn <strong>Chia sẻ màn hình</strong> để phát trực tiếp tab web phim cho cả phòng.
+                <p
+                  style={{
+                    color: "var(--text-secondary)",
+                    fontSize: "0.92rem",
+                    lineHeight: 1.6,
+                    marginBottom: "22px",
+                  }}
+                >
+                  Dán <strong>link phim nhúng (Iframe)</strong>, link{" "}
+                  <strong>.m3u8 / .mp4 / YouTube</strong> lên thanh công cụ phía trên, hoặc chọn{" "}
+                  <strong>Chia sẻ màn hình</strong> để phát trực tiếp tab web phim cho cả phòng.
                 </p>
 
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "10px", justifyContent: "center" }}>
+                <div
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    gap: "10px",
+                    justifyContent: "center",
+                  }}
+                >
                   <button
                     type="button"
                     className="btn-secondary"
                     onClick={() => {
-                      const demoMp4 = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4";
+                      const demoMp4 =
+                        "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4";
                       setUrlInput(demoMp4);
                       handleLoadMedia(null, demoMp4);
                     }}
@@ -586,11 +605,7 @@ export default function RoomPage({ params }) {
                     <span>Thử Video Mẫu (.MP4 Tự Đồng Bộ)</span>
                   </button>
 
-                  <button
-                    type="button"
-                    className="btn-secondary"
-                    onClick={handleStartScreenShare}
-                  >
+                  <button type="button" className="btn-secondary" onClick={handleStartScreenShare}>
                     <MonitorUp size={15} color="#22d3ee" />
                     <span>Bật Chia Sẻ Màn Hình Phim</span>
                   </button>
@@ -638,13 +653,18 @@ export default function RoomPage({ params }) {
             )}
           </div>
 
-          {/* Bottom Synchronization & Control Bar */}
           {media.type !== "empty" && media.type !== "screenshare" && (
             <div className="sync-control-bar">
               {media.type === "iframe" ? (
                 <>
-                  {/* Left: Shared Reference Timer & 3-2-1 Countdown for Cross-Origin Iframes */}
-                  <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "12px",
+                      flexWrap: "wrap",
+                    }}
+                  >
                     <div
                       style={{
                         display: "flex",
@@ -720,8 +740,14 @@ export default function RoomPage({ params }) {
                     )}
                   </div>
 
-                  {/* Right: Sandbox Ad-Blocker Toggle & Reload */}
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "8px",
+                      flexWrap: "wrap",
+                    }}
+                  >
                     <button
                       type="button"
                       onClick={handleToggleSandbox}
@@ -729,8 +755,14 @@ export default function RoomPage({ params }) {
                       className={`btn-secondary ${media.sandbox ? "active-mode" : ""}`}
                       title="Chặn web phim tự ý mở tab quảng cáo khi bấm vào video. Nếu trình phát báo lỗi chặn Sandbox, hãy bấm để tắt."
                     >
-                      {media.sandbox ? <Shield size={15} color="#34d399" /> : <ShieldOff size={15} color="#f59e0b" />}
-                      <span>{media.sandbox ? "Chặn Popup Quảng Cáo: BẬT" : "Chặn Popup: TẮT"}</span>
+                      {media.sandbox ? (
+                        <Shield size={15} color="#34d399" />
+                      ) : (
+                        <ShieldOff size={15} color="#f59e0b" />
+                      )}
+                      <span>
+                        {media.sandbox ? "Chặn Popup Quảng Cáo: BẬT" : "Chặn Popup: TẮT"}
+                      </span>
                     </button>
 
                     <button
@@ -746,7 +778,6 @@ export default function RoomPage({ params }) {
                 </>
               ) : (
                 <>
-                  {/* Automatic Sync Status for Direct Video / HLS / YouTube */}
                   <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                     <span
                       style={{
@@ -759,7 +790,8 @@ export default function RoomPage({ params }) {
                     <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>
                       Đồng bộ tự động:{" "}
                       <strong style={{ color: "var(--text-primary)" }}>
-                        {playback.isPlaying ? "Đang phát" : "Đang tạm dừng"} tại {formatTime(displayTimer)}
+                        {playback.isPlaying ? "Đang phát" : "Đang tạm dừng"} tại{" "}
+                        {formatTime(displayTimer)}
                       </strong>{" "}
                       (cập nhật bởi {playback.controllerName})
                     </span>
@@ -783,7 +815,6 @@ export default function RoomPage({ params }) {
           )}
         </div>
 
-        {/* Right Sidebar Column */}
         <aside className="sidebar-column">
           <div className="sidebar-tabs">
             <button
@@ -881,7 +912,16 @@ export default function RoomPage({ params }) {
           )}
 
           {sidebarTab === "users" && (
-            <div style={{ padding: "14px", overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: "10px" }}>
+            <div
+              style={{
+                padding: "14px",
+                overflowY: "auto",
+                flex: 1,
+                display: "flex",
+                flexDirection: "column",
+                gap: "10px",
+              }}
+            >
               {users.map((u) => (
                 <div
                   key={u.id}
@@ -914,10 +954,20 @@ export default function RoomPage({ params }) {
                       {u.name.charAt(0).toUpperCase()}
                     </div>
                     <div>
-                      <div style={{ fontSize: "0.88rem", fontWeight: 700, display: "flex", alignItems: "center", gap: "5px" }}>
+                      <div
+                        style={{
+                          fontSize: "0.88rem",
+                          fontWeight: 700,
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "5px",
+                        }}
+                      >
                         <span>{u.name}</span>
                         {u.id === socket?.id && (
-                          <span style={{ fontSize: "0.73rem", color: "var(--text-secondary)" }}>(Bạn)</span>
+                          <span style={{ fontSize: "0.73rem", color: "var(--text-secondary)" }}>
+                            (Bạn)
+                          </span>
                         )}
                       </div>
                       <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
@@ -948,40 +998,64 @@ export default function RoomPage({ params }) {
           )}
 
           {sidebarTab === "help" && (
-            <div style={{ padding: "16px", overflowY: "auto", flex: 1, fontSize: "0.84rem", lineHeight: 1.55, color: "var(--text-secondary)", display: "flex", flexDirection: "column", gap: "14px" }}>
-              <div style={{ background: "var(--bg-tertiary)", padding: "12px", borderRadius: "10px", border: "1px solid var(--border-color)" }}>
+            <div
+              style={{
+                padding: "16px",
+                overflowY: "auto",
+                flex: 1,
+                fontSize: "0.84rem",
+                lineHeight: 1.55,
+                color: "var(--text-secondary)",
+                display: "flex",
+                flexDirection: "column",
+                gap: "14px",
+              }}
+            >
+              <div
+                style={{
+                  background: "var(--bg-tertiary)",
+                  padding: "12px",
+                  borderRadius: "10px",
+                  border: "1px solid var(--border-color)",
+                }}
+              >
                 <h4 style={{ color: "var(--text-primary)", marginBottom: "6px" }}>
                   1. Khi dán link từ các web xem phim (Iframe)
                 </h4>
                 <p>
-                  Do chính sách bảo mật trình duyệt, các trang web phim ngoài không cho phép trang web khác tự ý bấm nút Play/Tua bên trong khung của họ. Vì vậy CineParty trang bị cho bạn:
+                  Do chính sách bảo mật trình duyệt, các trang web phim ngoài không cho phép trang
+                  web khác tự ý bấm nút Play/Tua bên trong khung của họ. Vì vậy CineParty trang bị
+                  cho bạn:
                 </p>
                 <ul style={{ paddingLeft: "18px", marginTop: "6px" }}>
                   <li>
-                    <strong>Đếm ngược 3-2-1 Bấm Play Cùng Lúc:</strong> Cả phòng sẽ thấy hiệu ứng đếm ngược 3-2-1 trên màn hình để bấm Play cùng một tích tắc.
+                    <strong>Đếm ngược 3-2-1 Bấm Play Cùng Lúc:</strong> Cả phòng sẽ thấy hiệu ứng
+                    đếm ngược 3-2-1 trên màn hình để bấm Play cùng một tích tắc.
                   </li>
                   <li>
-                    <strong>Chặn Popup Quảng Cáo:</strong> Giữ cho việc bấm vào player không bị nhảy sang các trang quảng cáo. (Nếu gặp web phim bắt tắt Sandbox mới cho xem, bạn chỉ cần bấm nút tắt Chặn Popup ở góc dưới).
+                    <strong>Chặn Popup Quảng Cáo:</strong> Giữ cho việc bấm vào player không bị
+                    nhảy sang các trang quảng cáo.
                   </li>
                 </ul>
               </div>
 
-              <div style={{ background: "var(--bg-tertiary)", padding: "12px", borderRadius: "10px", border: "1px solid var(--border-color)" }}>
+              <div
+                style={{
+                  background: "var(--bg-tertiary)",
+                  padding: "12px",
+                  borderRadius: "10px",
+                  border: "1px solid var(--border-color)",
+                }}
+              >
                 <h4 style={{ color: "var(--text-primary)", marginBottom: "6px" }}>
-                  2. Mẹo xem mượt 100% không quảng cáo: Chia sẻ màn hình
+                  2. Xem mượt 100% không quảng cáo: Chia sẻ màn hình
                 </h4>
                 <p>
-                  Nếu một web phim chặn không cho nhúng Iframe (báo lỗi từ chối kết nối), một người chỉ cần mở phim ở tab bên cạnh rồi bấm nút{" "}
-                  <strong style={{ color: "#22d3ee" }}>Chia Sẻ Màn Hình (Kèm Âm Thanh)</strong>, chọn tab phim đó và tích vào ô <em>&quot;Chia sẻ âm thanh tab&quot;</em>. Cả phòng sẽ xem cùng nhau chuẩn từng khung hình!
-                </p>
-              </div>
-
-              <div style={{ background: "var(--bg-tertiary)", padding: "12px", borderRadius: "10px", border: "1px solid var(--border-color)" }}>
-                <h4 style={{ color: "var(--text-primary)", marginBottom: "6px" }}>
-                  3. Tự động đồng bộ 2 chiều (.m3u8, .mp4, YouTube)
-                </h4>
-                <p>
-                  Nếu bạn dán link YouTube, file <code>.mp4</code> hoặc link luồng <code>.m3u8</code> (lấy từ F12 Network của web phim), bất kỳ ai bấm Tạm dừng hoặc Tua là máy của tất cả mọi người tự động tua theo ngay lập tức!
+                  Nếu một web phim chặn không cho nhúng Iframe, một người chỉ cần mở phim ở tab bên
+                  cạnh rồi bấm nút{" "}
+                  <strong style={{ color: "#22d3ee" }}>Chia Sẻ Màn Hình (Kèm Âm Thanh)</strong>,
+                  chọn tab phim đó và tích vào ô <em>&quot;Chia sẻ âm thanh tab&quot;</em>. Cả
+                  phòng sẽ xem cùng nhau chuẩn từng khung hình!
                 </p>
               </div>
             </div>

@@ -1,10 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
 import {
   Film,
-  Users,
   MonitorUp,
   Code2,
   PlayCircle,
@@ -13,6 +11,7 @@ import {
   ArrowRight,
   KeyRound,
 } from "lucide-react";
+import WatchRoom from "@/components/WatchRoom";
 
 function generateRoomCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -24,7 +23,7 @@ function generateRoomCode() {
 }
 
 export default function HomePage() {
-  const router = useRouter();
+  const [activeRoomId, setActiveRoomId] = useState(null);
   const [activeTab, setActiveTab] = useState("create"); // 'create' | 'join'
   const [username, setUsername] = useState("");
   const [initialUrl, setInitialUrl] = useState("");
@@ -36,25 +35,57 @@ export default function HomePage() {
     if (savedName) {
       setUsername(savedName);
     }
+
+    // Read ?room=CODE from URL query string (works seamlessly on GitHub Pages!)
+    const checkUrlRoom = () => {
+      const params = new URLSearchParams(window.location.search);
+      const roomParam = params.get("room");
+      if (roomParam && roomParam.trim()) {
+        setActiveRoomId(roomParam.trim().toUpperCase());
+      } else {
+        setActiveRoomId(null);
+      }
+    };
+
+    checkUrlRoom();
+    window.addEventListener("popstate", checkUrlRoom);
+    return () => window.removeEventListener("popstate", checkUrlRoom);
   }, []);
+
+  const enterRoom = (code) => {
+    const cleanCode = code.toUpperCase().replace(/[^A-Z0-9_-]/g, "");
+    const newUrl = `${window.location.pathname}?room=${cleanCode}`;
+    window.history.pushState({ room: cleanCode }, "", newUrl);
+    setActiveRoomId(cleanCode);
+  };
+
+  const leaveRoom = () => {
+    window.history.pushState({}, "", window.location.pathname);
+    setActiveRoomId(null);
+  };
 
   const handleCreateRoom = (e) => {
     e.preventDefault();
     setError("");
-    const cleanName = username.trim() || `Khách_${Math.floor(100 + Math.random() * 900)}`;
+    const cleanName =
+      username.trim() || `Khách_${Math.floor(100 + Math.random() * 900)}`;
     localStorage.setItem("cineparty_username", cleanName);
 
     const newRoomCode = generateRoomCode();
     if (initialUrl.trim()) {
-      sessionStorage.setItem(`cineparty_init_url_${newRoomCode}`, initialUrl.trim());
+      sessionStorage.setItem(
+        `cineparty_init_url_${newRoomCode}`,
+        initialUrl.trim()
+      );
     }
-    router.push(`/room/${newRoomCode}`);
+    enterRoom(newRoomCode);
   };
 
   const handleJoinRoom = (e) => {
     e.preventDefault();
     setError("");
-    const cleanName = username.trim() || `Khách_${Math.floor(100 + Math.random() * 900)}`;
+    const cleanName =
+      username.trim() || `Khách_${Math.floor(100 + Math.random() * 900)}`;
     localStorage.setItem("cineparty_username", cleanName);
 
     let extractedCode = joinCode.trim();
@@ -63,11 +94,19 @@ export default function HomePage() {
       return;
     }
 
-    // If user pasted a full invite URL like http://localhost:3000/room/ABC123
-    const match = extractedCode.match(/\/room\/([A-Za-z0-9_-]+)/i);
-    if (match && match[1]) {
-      extractedCode = match[1];
-    }
+    // Handle full invite URL with ?room=CODE or /room/CODE
+    try {
+      if (extractedCode.includes("http")) {
+        const u = new URL(extractedCode);
+        const qRoom = u.searchParams.get("room");
+        if (qRoom) {
+          extractedCode = qRoom;
+        } else {
+          const match = u.pathname.match(/\/room\/([A-Za-z0-9_-]+)/i);
+          if (match && match[1]) extractedCode = match[1];
+        }
+      }
+    } catch {}
 
     extractedCode = extractedCode.toUpperCase().replace(/[^A-Z0-9_-]/g, "");
     if (!extractedCode) {
@@ -75,8 +114,12 @@ export default function HomePage() {
       return;
     }
 
-    router.push(`/room/${extractedCode}`);
+    enterRoom(extractedCode);
   };
+
+  if (activeRoomId) {
+    return <WatchRoom roomId={activeRoomId} onLeaveRoom={leaveRoom} />;
+  }
 
   return (
     <div className="landing-wrapper">
@@ -101,14 +144,16 @@ export default function HomePage() {
           </div>
           <h1 className="hero-title">
             Dán link phim bất kỳ,{" "}
-            <span className="hero-gradient-text">thưởng thức cùng nhau</span> dù ở bất cứ đâu.
+            <span className="hero-gradient-text">thưởng thức cùng nhau</span> dù ở
+            bất cứ đâu.
           </h1>
           <p className="hero-desc">
             Tạo phòng riêng tư chỉ trong 1 giây. Hỗ trợ nhúng trực tiếp{" "}
-            <strong>Iframe từ các web phim</strong> (kèm lá chắn chặn quảng cáo bật tab mới),{" "}
-            <strong>Chia sẻ màn hình trình duyệt (kèm âm thanh)</strong>, hoặc đồng bộ tự động{" "}
-            <strong>Play / Pause / Tua</strong> với link <code>.m3u8</code>, <code>.mp4</code> và{" "}
-            <strong>YouTube</strong>.
+            <strong>Iframe từ các web phim</strong> (kèm lá chắn chặn quảng cáo
+            bật tab mới),{" "}
+            <strong>Chia sẻ màn hình trình duyệt (kèm âm thanh)</strong>, hoặc
+            đồng bộ tự động <strong>Play / Pause / Tua</strong> với link{" "}
+            <code>.m3u8</code>, <code>.mp4</code> và <strong>YouTube</strong>.
           </p>
 
           <div className="feature-grid">
@@ -116,7 +161,9 @@ export default function HomePage() {
               <Code2 size={20} color="#a78bfa" />
               <h3>Link Nhúng Iframe & Chặn Popup</h3>
               <p>
-                Dán mã <code>&lt;iframe&gt;</code> hoặc link từ web phim. Tích hợp Sandbox chặn quảng cáo tự mở tab và bộ đếm ngược 3-2-1 đồng bộ.
+                Dán mã <code>&lt;iframe&gt;</code> hoặc link từ web phim. Tích
+                hợp Sandbox chặn quảng cáo tự mở tab và bộ đếm ngược 3-2-1 đồng
+                bộ.
               </p>
             </div>
 
@@ -124,7 +171,8 @@ export default function HomePage() {
               <MonitorUp size={20} color="#22d3ee" />
               <h3>Chia Sẻ Màn Hình 60FPS</h3>
               <p>
-                Web phim chặn nhúng? Phát trực tiếp tab phim kèm âm thanh gốc qua WebRTC cho cả phòng xem mượt mà 100%.
+                Web phim chặn nhúng? Phát trực tiếp tab phim kèm âm thanh gốc
+                qua WebRTC cho cả phòng xem mượt mà 100%.
               </p>
             </div>
 
@@ -132,7 +180,8 @@ export default function HomePage() {
               <PlayCircle size={20} color="#34d399" />
               <h3>Đồng Bộ Play / Pause / Seek</h3>
               <p>
-                Tự động đồng bộ từng giây khi xem nguồn <code>.m3u8</code> (HLS), <code>.mp4</code> hoặc YouTube cùng bạn bè.
+                Tự động đồng bộ từng giây khi xem nguồn <code>.m3u8</code>{" "}
+                (HLS), <code>.mp4</code> hoặc YouTube cùng bạn bè.
               </p>
             </div>
 
@@ -140,7 +189,8 @@ export default function HomePage() {
               <ShieldCheck size={20} color="#fbbf24" />
               <h3>Phòng Riêng Tư & Link Mời</h3>
               <p>
-                Mỗi phòng có mã 6 ký tự riêng. Chỉ những ai có mã phòng hoặc link mời mới có thể tham gia cùng bạn.
+                Mỗi phòng có mã 6 ký tự riêng. Chỉ những ai có mã phòng hoặc
+                link mời mới có thể tham gia cùng bạn.
               </p>
             </div>
           </div>
@@ -187,7 +237,8 @@ export default function HomePage() {
 
               <div className="form-group">
                 <label className="form-label">
-                  Link phim / Mã nhúng Iframe (Tùy chọn — có thể dán sau trong phòng)
+                  Link phim / Mã nhúng Iframe (Tùy chọn — có thể dán sau trong
+                  phòng)
                 </label>
                 <input
                   type="text"
@@ -223,7 +274,9 @@ export default function HomePage() {
                   textAlign: "center",
                 }}
               >
-                Bạn cũng có thể bật <strong>Chia sẻ màn hình (Screen Share)</strong> ngay sau khi vào phòng.
+                Bạn cũng có thể bật{" "}
+                <strong>Chia sẻ màn hình (Screen Share)</strong> ngay sau khi
+                vào phòng.
               </p>
             </form>
           ) : (
@@ -248,7 +301,11 @@ export default function HomePage() {
                   placeholder="VD: K9X4P2 hoặc dán link phòng..."
                   value={joinCode}
                   onChange={(e) => setJoinCode(e.target.value)}
-                  style={{ textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.04em" }}
+                  style={{
+                    textTransform: "uppercase",
+                    fontWeight: 700,
+                    letterSpacing: "0.04em",
+                  }}
                 />
               </div>
 
@@ -281,7 +338,7 @@ export default function HomePage() {
           padding: "12px 0",
         }}
       >
-        CineParty • Xây dựng với Next.js, Socket.IO & WebRTC
+        CineParty • Xem Phim Chung Thời Gian Thực (WebRTC P2P)
       </footer>
     </div>
   );
