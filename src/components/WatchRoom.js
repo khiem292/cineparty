@@ -13,17 +13,13 @@ import {
   MonitorOff,
   Play,
   RotateCcw,
-  Shield,
-  ShieldOff,
   Send,
-  HelpCircle,
   Lock,
   Unlock,
   Maximize2,
   Minimize2,
   Share2,
   Search,
-  Crop,
   Loader2,
   ListVideo,
   X,
@@ -75,18 +71,13 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
   const [urlInput, setUrlInput] = useState("");
   const [isExtracting, setIsExtracting] = useState(false);
   const [copiedInvite, setCopiedInvite] = useState(false);
-  const [sidebarTab, setSidebarTab] = useState("chat"); // 'chat' | 'users' | 'help'
+  const [sidebarTab, setSidebarTab] = useState("chat"); // 'chat' | 'episodes' | 'users'
   const [messages, setMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
   const [floatingReactions, setFloatingReactions] = useState([]);
   const [showMobileUrlBar, setShowMobileUrlBar] = useState(true);
   const [mobileExpanded, setMobileExpanded] = useState(false);
   const [mobileToast, setMobileToast] = useState("");
-
-  // Focus / Crop Webpage Mode for stubborn iframes
-  const [cropWebpage, setCropWebpage] = useState(false);
-  const [cropOffsetY, setCropOffsetY] = useState(140);
-  const [cropZoom] = useState(1.25);
 
   // Built-in Movie Search Modal
   const [showSearchModal, setShowSearchModal] = useState(false);
@@ -96,7 +87,6 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
 
   const [displayTimer, setDisplayTimer] = useState(0);
   const [iframeStartOffset, setIframeStartOffset] = useState(0);
-  const [iframeKey, setIframeKey] = useState(0);
 
   const iframeRef = useRef(null);
   const chatEndRef = useRef(null);
@@ -106,7 +96,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
 
   const showToast = (msg) => {
     setMobileToast(msg);
-    setTimeout(() => setMobileToast(""), 4200);
+    setTimeout(() => setMobileToast(""), 4500);
   };
 
   useEffect(() => {
@@ -134,9 +124,11 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
         setIsExtracting(true);
         const resolved = await resolvePureVideoMedia(initUrl);
         setIsExtracting(false);
-        if (resolved) {
+        if (resolved && !resolved.error) {
           s.emit("change-media", { roomId, media: resolved });
           setShowMobileUrlBar(false);
+        } else if (resolved?.error) {
+          showToast(resolved.error);
         }
       }
     });
@@ -196,17 +188,11 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
         setIframeStartOffset(0);
         setScreenSharerId(sharerId || null);
         setScreenSharerName(sharerName || null);
-        setCropWebpage(false);
         if (newMedia.type !== "empty") {
           setShowMobileUrlBar(false);
         }
       }
     );
-
-    s.on("sandbox-toggled", ({ sandbox }) => {
-      setMedia((prev) => ({ ...prev, sandbox }));
-      setIframeKey((k) => k + 1);
-    });
 
     const handleIncomingPlayback = ({ action, playback: newPlayback }) => {
       if (!newPlayback) return;
@@ -314,12 +300,27 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
 
     if (!resolved) return;
 
+    if (resolved.error) {
+      showToast(resolved.error);
+      if (resolved.suggestedQuery) {
+        setSearchQuery(resolved.suggestedQuery);
+        setShowSearchModal(true);
+        setIsSearching(true);
+        const results = await searchMoviesByKeyword(resolved.suggestedQuery);
+        setSearchResults(results);
+        setIsSearching(false);
+      }
+      return;
+    }
+
     if (localScreenStream) {
       stopLocalScreenShare();
     }
 
-    if (resolved.extractedMethod) {
-      showToast(`✨ Đã tách video gốc: ${resolved.extractedMethod}`);
+    if (resolved.movieTitle) {
+      showToast(`🎬 Đang phát: ${resolved.movieTitle}`);
+    } else if (resolved.extractedMethod) {
+      showToast(`✨ Đã tách riêng video: ${resolved.extractedMethod}`);
     }
 
     socket.emit("change-media", {
@@ -343,6 +344,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
       roomId,
       media: nextMedia,
     });
+    showToast(`🎬 Chuyển sang: ${nextMedia.movieTitle}`);
   };
 
   const handleMovieSearch = async (e) => {
@@ -442,14 +444,6 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
     });
   };
 
-  const handleToggleSandbox = () => {
-    if (!canControl || !socket) return;
-    socket.emit("toggle-sandbox", {
-      roomId,
-      sandbox: !media.sandbox,
-    });
-  };
-
   const handleCopyInvite = async () => {
     const baseUrl = `${window.location.origin}${window.location.pathname}`;
     const inviteUrl = `${baseUrl}?room=${roomId}`;
@@ -514,7 +508,8 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
               marginBottom: "18px",
             }}
           >
-            Nhập tên hiển thị của bạn để vào xem ngay đoạn phim mọi người đang xem:
+            Nhập tên hiển thị của bạn để vào xem ngay đoạn phim mọi người đang
+            xem:
           </p>
           <form
             onSubmit={(e) => {
@@ -552,6 +547,9 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
       ? appendStartTimeToIframeUrl(media.url, iframeStartOffset)
       : "";
 
+  const hasEpisodes =
+    Array.isArray(media.episodes) && media.episodes.length > 1;
+
   return (
     <div className="room-layout">
       {/* Toast Notification */}
@@ -562,16 +560,16 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
             top: "58px",
             left: "12px",
             right: "12px",
-            maxWidth: "520px",
+            maxWidth: "560px",
             margin: "0 auto",
             background: "rgba(17, 21, 31, 0.96)",
             border: "1px solid var(--accent-primary)",
             color: "var(--text-primary)",
-            padding: "11px 14px",
+            padding: "11px 16px",
             borderRadius: "12px",
-            fontSize: "0.84rem",
+            fontSize: "0.85rem",
             zIndex: 100,
-            boxShadow: "0 12px 32px rgba(0,0,0,0.5)",
+            boxShadow: "0 12px 32px rgba(0,0,0,0.55)",
             textAlign: "center",
           }}
         >
@@ -626,7 +624,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                 }}
               >
                 <Film size={18} color="#a78bfa" />
-                <span>Tìm Phim Trực Tiếp (Chỉ Hiện Video • Tự Đồng Bộ)</span>
+                <span>Tìm Phim Trực Tiếp (100% Chỉ Hiện Video • Tự Đồng Bộ)</span>
               </div>
               <button
                 type="button"
@@ -650,7 +648,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
               <input
                 type="text"
                 className="form-input"
-                placeholder="Nhập tên phim (VD: Đảo Hải Tặc, Mai, Squid Game, Conan...)"
+                placeholder="Nhập tên phim (VD: Gả Kim Thoa, Đảo Hải Tặc, Mai, Squid Game...)"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 autoFocus
@@ -686,8 +684,8 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                   }}
                 >
                   Nhập tên phim bất kỳ để phát trực tiếp luồng{" "}
-                  <strong>Video thuần (.m3u8)</strong>. Người vào sau sẽ tự động
-                  nhảy tới đúng giây đang chiếu mà không cần bấm cùng lúc!
+                  <strong>Video thuần (.m3u8)</strong>. Khung xem sẽ chỉ hiện
+                  duy nhất video và tự động đồng bộ thời gian thực!
                 </div>
               )}
 
@@ -738,7 +736,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                         marginTop: "2px",
                       }}
                     >
-                      {item.origin_name} ({item.year})
+                      {item.origin_name} {item.year ? `(${item.year})` : ""}
                     </div>
                     <div
                       style={{
@@ -854,6 +852,53 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
         </div>
 
         <div className="room-header-right">
+          {media.type !== "empty" && media.type !== "screenshare" && (
+            <div
+              className="room-badge hide-on-mobile"
+              style={{ gap: "6px" }}
+              title="Trạng thái đồng bộ tự động của phòng"
+            >
+              <span
+                style={{
+                  width: "8px",
+                  height: "8px",
+                  borderRadius: "50%",
+                  background: playback.isPlaying ? "#10b981" : "#f59e0b",
+                }}
+              />
+              <span style={{ fontSize: "0.78rem", color: "var(--text-secondary)" }}>
+                {media.movieTitle ? `${media.movieTitle} • ` : ""}
+                <strong style={{ color: "var(--text-primary)" }}>
+                  {formatTime(displayTimer)}
+                </strong>
+              </span>
+              {canControl && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    handlePlaybackAction(
+                      "sync",
+                      displayTimer,
+                      playback.isPlaying
+                    )
+                  }
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: "#c4b5fd",
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    marginLeft: "4px",
+                  }}
+                  title="Đồng bộ tất cả theo máy bạn"
+                >
+                  <RotateCcw size={13} />
+                </button>
+              )}
+            </div>
+          )}
+
           <button
             type="button"
             onClick={() => setShowSearchModal(true)}
@@ -949,7 +994,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                   className="url-input"
                   placeholder={
                     canControl
-                      ? "Dán link phim bất kỳ hoặc nhập thẳng tên phim (tự động tách lấy riêng Video & đồng bộ)..."
+                      ? "Dán link phim (Rophim, Motchill, YouTube...) hoặc nhập thẳng tên phim (VD: Gả Kim Thoa)..."
                       : "Chỉ Chủ phòng mới đổi được phim"
                   }
                   value={urlInput}
@@ -969,7 +1014,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
               >
                 {isExtracting ? <Loader2 size={14} /> : <Play size={14} />}
                 <span>
-                  {isExtracting ? "Đang tách video..." : "Phát Video"}
+                  {isExtracting ? "Đang lấy video..." : "Phát Video"}
                 </span>
               </button>
             </form>
@@ -999,7 +1044,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
             )}
           </div>
 
-          {/* Cinema Player Viewport */}
+          {/* 100% Pure Video Stage (The exact red rectangle area!) */}
           <div
             className={`player-viewport ${
               mobileExpanded ? "mobile-expanded" : ""
@@ -1013,7 +1058,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                   style={{ marginBottom: "12px" }}
                 />
                 <h3 style={{ fontSize: "1.05rem", marginBottom: "6px" }}>
-                  Đang tự động tách khung Video gốc...
+                  Đang lấy luồng Video thuần (không giao diện web)...
                 </h3>
                 <p
                   style={{
@@ -1021,8 +1066,8 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                     color: "var(--text-secondary)",
                   }}
                 >
-                  Hệ thống đang lọc bỏ giao diện web ngoài và kết nối đồng bộ tự
-                  động cho phòng.
+                  Khung xem sẽ chỉ hiển thị duy nhất trình phát video và tự động
+                  đồng bộ cho cả phòng.
                 </p>
               </div>
             )}
@@ -1055,7 +1100,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                     marginBottom: "8px",
                   }}
                 >
-                  Rạp chiếu #{roomId} — Tự Động Đồng Bộ Thời Gian Thực
+                  Khung Xem Phim Thuần 100% — Phòng #{roomId}
                 </h2>
                 <p
                   style={{
@@ -1065,12 +1110,10 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                     marginBottom: "14px",
                   }}
                 >
-                  Chỉ hiển thị duy nhất khung Video.{" "}
-                  <strong>
-                    Ai vào phòng sau sẽ tự động nhảy tới đúng đoạn phim đang
-                    chiếu
-                  </strong>{" "}
-                  mà không cần bấm Play cùng lúc!
+                  Dán link bộ phim từ web phim bất kỳ (VD: Rophim, Motchill...)
+                  hoặc nhập tên phim lên ô phía trên. Khung này sẽ{" "}
+                  <strong>chỉ hiển thị duy nhất Video</strong> và tự động đồng
+                  bộ đoạn đang xem cho mọi người!
                 </p>
 
                 <div
@@ -1092,7 +1135,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                     onClick={() => setShowSearchModal(true)}
                   >
                     <Search size={15} />
-                    <span>Tìm Phim Phát Ngay (Tự Đồng Bộ 100%)</span>
+                    <span>Tìm Phim Phát Ngay (Chỉ Hiện Video)</span>
                   </button>
 
                   <button
@@ -1138,218 +1181,25 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
             )}
 
             {media.type === "iframe" && effectiveIframeUrl && (
-              <div
-                style={{
-                  width: "100%",
-                  height: "100%",
-                  overflow: "hidden",
-                  position: "relative",
-                }}
-              >
-                <iframe
-                  key={`${effectiveIframeUrl}-${iframeKey}-${media.sandbox}`}
-                  ref={iframeRef}
-                  src={effectiveIframeUrl}
-                  className="player-iframe"
-                  allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
-                  allowFullScreen
-                  style={
-                    cropWebpage
-                      ? {
-                          width: `${100 / cropZoom}%`,
-                          height: `calc(${100 / cropZoom}% + ${cropOffsetY}px)`,
-                          transform: `scale(${cropZoom})`,
-                          transformOrigin: "top center",
-                          marginTop: `-${cropOffsetY * cropZoom}px`,
-                        }
-                      : undefined
-                  }
-                  {...(media.sandbox
-                    ? {
-                        sandbox:
-                          "allow-scripts allow-same-origin allow-forms allow-presentation",
-                      }
-                    : {})}
-                />
-              </div>
+              <iframe
+                key={effectiveIframeUrl}
+                ref={iframeRef}
+                src={effectiveIframeUrl}
+                className="player-iframe"
+                allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
+                allowFullScreen
+                {...(media.sandbox
+                  ? {
+                      sandbox:
+                        "allow-scripts allow-same-origin allow-forms allow-presentation",
+                    }
+                  : {})}
+              />
             )}
           </div>
-
-          {/* Episode Selector Strip (when movie has multiple episodes) */}
-          {Array.isArray(media.episodes) && media.episodes.length > 1 && (
-            <div
-              style={{
-                background: "var(--bg-primary)",
-                borderTop: "1px solid var(--border-color)",
-                padding: "6px 12px",
-                display: "flex",
-                alignItems: "center",
-                gap: "6px",
-                overflowX: "auto",
-                flexShrink: 0,
-              }}
-            >
-              <span
-                style={{
-                  fontSize: "0.78rem",
-                  fontWeight: 700,
-                  color: "#c4b5fd",
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: "4px",
-                  flexShrink: 0,
-                  marginRight: "4px",
-                }}
-              >
-                <ListVideo size={14} />
-                <span>Chọn tập:</span>
-              </span>
-              {media.episodes.map((ep, idx) => (
-                <button
-                  key={ep.slug || idx}
-                  type="button"
-                  disabled={!canControl}
-                  onClick={() => handleSelectEpisode(ep, idx)}
-                  className={`btn-secondary ${
-                    media.currentEpisodeIndex === idx ? "active-mode" : ""
-                  }`}
-                  style={{
-                    padding: "4px 10px",
-                    fontSize: "0.76rem",
-                    flexShrink: 0,
-                  }}
-                >
-                  {ep.name}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {/* Clean Automatic Sync Status Strip (No manual timer or countdown needed!) */}
-          {media.type !== "empty" && media.type !== "screenshare" && (
-            <div className="sync-control-bar">
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "8px",
-                  flexShrink: 0,
-                }}
-              >
-                <span
-                  style={{
-                    width: "8px",
-                    height: "8px",
-                    borderRadius: "50%",
-                    background: playback.isPlaying ? "#10b981" : "#f59e0b",
-                    boxShadow: playback.isPlaying
-                      ? "0 0 8px #10b981"
-                      : "none",
-                  }}
-                />
-                <span
-                  style={{
-                    fontSize: "0.8rem",
-                    color: "var(--text-secondary)",
-                  }}
-                >
-                  {media.movieTitle && (
-                    <strong style={{ color: "#c4b5fd", marginRight: "6px" }}>
-                      {media.movieTitle} •
-                    </strong>
-                  )}
-                  <strong style={{ color: "var(--text-primary)" }}>
-                    {playback.isPlaying ? "Đang phát tự động" : "Đang tạm dừng"}{" "}
-                    ({formatTime(displayTimer)})
-                  </strong>{" "}
-                  <span className="hide-on-mobile">
-                    — Ai vào sau tự động xem tiếp tại mốc này
-                  </span>
-                </span>
-              </div>
-
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "6px",
-                  flexShrink: 0,
-                }}
-              >
-                {media.type === "iframe" && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => setCropWebpage((v) => !v)}
-                      className={`btn-secondary ${
-                        cropWebpage ? "active-mode" : ""
-                      }`}
-                      title="Phóng to khung video & cắt bỏ thanh menu của trang web ngoài"
-                    >
-                      <Crop size={14} color="#22d3ee" />
-                      <span>
-                        {cropWebpage ? "Cắt Viền Web: BẬT" : "Cắt Viền Web"}
-                      </span>
-                    </button>
-
-                    {cropWebpage && (
-                      <input
-                        type="range"
-                        min={0}
-                        max={380}
-                        value={cropOffsetY}
-                        onChange={(e) =>
-                          setCropOffsetY(Number(e.target.value))
-                        }
-                        title="Kéo để căn chỉnh vị trí khung video"
-                        style={{ width: "75px", accentColor: "#8b5cf6" }}
-                      />
-                    )}
-
-                    <button
-                      type="button"
-                      onClick={handleToggleSandbox}
-                      disabled={!canControl}
-                      className={`btn-secondary ${
-                        media.sandbox ? "active-mode" : ""
-                      }`}
-                      title="Chặn quảng cáo mở tab mới"
-                    >
-                      {media.sandbox ? (
-                        <Shield size={14} color="#34d399" />
-                      ) : (
-                        <ShieldOff size={14} color="#f59e0b" />
-                      )}
-                      <span>
-                        {media.sandbox ? "Chặn QC: BẬT" : "Chặn QC: TẮT"}
-                      </span>
-                    </button>
-                  </>
-                )}
-
-                {canControl && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handlePlaybackAction(
-                        "sync",
-                        displayTimer,
-                        playback.isPlaying
-                      )
-                    }
-                    className="btn-secondary"
-                    title="Đồng bộ tất cả mọi người theo thời gian máy bạn"
-                  >
-                    <RotateCcw size={13} />
-                    <span>Đồng bộ ngay</span>
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
         </div>
 
-        {/* Bottom / Right Sidebar */}
+        {/* Right / Bottom Sidebar */}
         <aside className="sidebar-column">
           <div className="sidebar-tabs">
             <button
@@ -1363,20 +1213,24 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
             <button
               type="button"
               className={`sidebar-tab ${
+                sidebarTab === "episodes" ? "active" : ""
+              }`}
+              onClick={() => setSidebarTab("episodes")}
+            >
+              <ListVideo size={14} />
+              <span>
+                Tập Phim {hasEpisodes ? `(${media.episodes.length})` : ""}
+              </span>
+            </button>
+            <button
+              type="button"
+              className={`sidebar-tab ${
                 sidebarTab === "users" ? "active" : ""
               }`}
               onClick={() => setSidebarTab("users")}
             >
               <Users size={14} />
               <span>Bạn bè ({users.length})</span>
-            </button>
-            <button
-              type="button"
-              className={`sidebar-tab ${sidebarTab === "help" ? "active" : ""}`}
-              onClick={() => setSidebarTab("help")}
-            >
-              <HelpCircle size={14} />
-              <span>Hướng Dẫn</span>
             </button>
           </div>
 
@@ -1451,6 +1305,68 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                 </form>
               </div>
             </>
+          )}
+
+          {sidebarTab === "episodes" && (
+            <div
+              style={{
+                padding: "12px",
+                overflowY: "auto",
+                flex: 1,
+                display: "flex",
+                flexDirection: "column",
+                gap: "10px",
+              }}
+            >
+              {hasEpisodes ? (
+                <>
+                  <div
+                    style={{
+                      fontSize: "0.84rem",
+                      fontWeight: 700,
+                      color: "#c4b5fd",
+                    }}
+                  >
+                    {media.movieTitle}
+                  </div>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fill, minmax(72px, 1fr))",
+                      gap: "8px",
+                    }}
+                  >
+                    {media.episodes.map((ep, idx) => (
+                      <button
+                        key={ep.slug || idx}
+                        type="button"
+                        disabled={!canControl}
+                        onClick={() => handleSelectEpisode(ep, idx)}
+                        className={`btn-secondary ${
+                          media.currentEpisodeIndex === idx ? "active-mode" : ""
+                        }`}
+                        style={{ padding: "8px 6px", fontSize: "0.8rem" }}
+                      >
+                        {ep.name}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div
+                  style={{
+                    textAlign: "center",
+                    color: "var(--text-secondary)",
+                    padding: "24px 12px",
+                    fontSize: "0.84rem",
+                  }}
+                >
+                   Khi bạn dán link phim bộ hoặc chọn phim từ mục{" "}
+                  <strong>Tìm Phim</strong>, danh sách tất cả các tập sẽ hiện ở
+                  đây để bạn chuyển tập chỉ với 1 chạm.
+                </div>
+              )}
+            </div>
           )}
 
           {sidebarTab === "users" && (
@@ -1554,42 +1470,6 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                   )}
                 </div>
               ))}
-            </div>
-          )}
-
-          {sidebarTab === "help" && (
-            <div
-              style={{
-                padding: "12px",
-                overflowY: "auto",
-                flex: 1,
-                fontSize: "0.82rem",
-                lineHeight: 1.5,
-                color: "var(--text-secondary)",
-                display: "flex",
-                flexDirection: "column",
-                gap: "10px",
-              }}
-            >
-              <div
-                style={{
-                  background: "var(--bg-tertiary)",
-                  padding: "10px 12px",
-                  borderRadius: "10px",
-                  border: "1px solid var(--border-color)",
-                }}
-              >
-                <h4 style={{ color: "var(--text-primary)", marginBottom: "4px" }}>
-                  ⚡ Tự động khớp đoạn phim cho người vào sau
-                </h4>
-                <p>
-                  Máy của Chủ phòng liên tục phát tín hiệu đồng bộ thời gian
-                  thực (mỗi 2 giây). Bất kỳ ai vào phòng muộn đều sẽ{" "}
-                  <strong>tự động nhảy tới đúng phút:giây đang chiếu</strong> và
-                  tự động phát tiếp, hoàn toàn không cần đếm ngược hay bấm cùng
-                  lúc!
-                </p>
-              </div>
             </div>
           )}
         </aside>

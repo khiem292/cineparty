@@ -2,6 +2,30 @@
 
 import { parseMediaInput } from "./urlParser";
 
+// Domains/patterns that are verified PURE video players (never full websites)
+const PURE_PLAYER_PATTERNS = [
+  /player\.phimapi\.com/i,
+  /opstream/i,
+  /goatembed/i,
+  /player\.vimeo\.com/i,
+  /dailymotion\.com\/embed/i,
+  /drive\.google\.com\/file\/d\/[^/]+\/preview/i,
+  /ok\.ru\/videoembed/i,
+  /player\.bilibili\.com/i,
+  /facebook\.com\/plugins\/video\.php/i,
+  /youtube\.com\/embed/i,
+  /vidsrc/i,
+  /filemoon\.[^/]+\/e\//i,
+  /streamtape\.[^/]+\/e\//i,
+  /dood[^/]*\.[^/]+\/e\//i,
+  /mixdrop\.[^/]+\/e\//i,
+  /hydrax/i,
+  /play\.ophim/i,
+  /embed\./i,
+  /\/embed\//i,
+  /\/player\//i,
+];
+
 const IGNORED_IFRAME_PATTERNS = [
   /facebook\.com\/plugins\/(like|comments|page)/i,
   /disqus\.com/i,
@@ -17,35 +41,11 @@ const IGNORED_IFRAME_PATTERNS = [
   /javascript:/i,
 ];
 
-const PLAYER_IFRAME_KEYWORDS = [
-  "embed",
-  "player",
-  "video",
-  "stream",
-  "play",
-  "cloud",
-  "hydrax",
-  "ok.ru",
-  "vimeo",
-  "dailymotion",
-  "youtube",
-  "drive.google",
-  "phim",
-  "opstream",
-  "goat",
-  "vidsrc",
-  "filemoon",
-  "dood",
-  "streamtape",
-  "mixdrop",
-  "hls",
-  "m3u8",
-  "vip",
-];
+export function isPurePlayerUrl(urlStr) {
+  if (!urlStr) return false;
+  return PURE_PLAYER_PATTERNS.some((pat) => pat.test(urlStr));
+}
 
-/**
- * Append start timestamp to iframe player URLs for late joiners
- */
 export function appendStartTimeToIframeUrl(urlStr, seconds) {
   const sec = Math.floor(seconds || 0);
   if (!urlStr || sec <= 3) return urlStr;
@@ -73,21 +73,12 @@ export function appendStartTimeToIframeUrl(urlStr, seconds) {
       u.searchParams.set("autoplay", "1");
       return u.toString();
     }
-    // Generic embed players often support ?t= or ?start= and autoplay=1
-    if (!u.searchParams.has("t") && !u.searchParams.has("start")) {
-      u.searchParams.set("autoplay", "1");
-      u.searchParams.set("t", String(sec));
-    }
     return u.toString();
   } catch {
     return urlStr;
   }
 }
 
-/**
- * Check if a URL has a direct .m3u8 or .mp4 link embedded in its query parameters
- * (e.g., https://player.phimapi.com/player/?url=https://.../index.m3u8)
- */
 function extractStreamFromQueryParams(urlStr) {
   try {
     const u = new URL(urlStr);
@@ -98,7 +89,7 @@ function extractStreamFromQueryParams(urlStr) {
           type: "hls",
           url: decoded,
           sandbox: false,
-          extractedMethod: "Luồng video thuần (.m3u8 tự đồng bộ)",
+          extractedMethod: "Luồng video thuần (.m3u8)",
         };
       }
       if (/^https?:\/\/.+\.(mp4|webm)(\?.*)?$/i.test(decoded)) {
@@ -106,7 +97,7 @@ function extractStreamFromQueryParams(urlStr) {
           type: "video",
           url: decoded,
           sandbox: false,
-          extractedMethod: "File video gốc (.mp4 tự đồng bộ)",
+          extractedMethod: "File video gốc (.mp4)",
         };
       }
     }
@@ -114,9 +105,6 @@ function extractStreamFromQueryParams(urlStr) {
   return null;
 }
 
-/**
- * Convert known webpage URLs directly into pure video player URLs
- */
 export function convertKnownPlatformToPlayerUrl(urlStr) {
   const fromQuery = extractStreamFromQueryParams(urlStr);
   if (fromQuery) return fromQuery;
@@ -227,7 +215,7 @@ async function fetchHtmlViaProxy(targetUrl) {
   for (const buildProxyUrl of proxies) {
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 6000);
+      const timeout = setTimeout(() => controller.abort(), 5000);
       const res = await fetch(buildProxyUrl(targetUrl), {
         signal: controller.signal,
       });
@@ -255,6 +243,58 @@ async function fetchHtmlViaProxy(targetUrl) {
   return null;
 }
 
+/**
+ * Extract clean movie title candidates from webpage <title> or og:title
+ * e.g. "Phim Gả Kim Thoa / Gả trâm vàng Tập 1 Vietsub - Rophim" -> ["Gả Kim Thoa", "Gả trâm vàng"]
+ */
+function extractTitleCandidatesFromHtml(html) {
+  if (!html) return [];
+  const rawTitles = [];
+
+  const ogMatch = html.match(
+    /<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i
+  );
+  if (ogMatch && ogMatch[1]) rawTitles.push(ogMatch[1]);
+
+  const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+  if (titleMatch && titleMatch[1]) rawTitles.push(titleMatch[1]);
+
+  const candidates = [];
+  for (const raw of rawTitles) {
+    // Decode basic HTML entities
+    const decoded = raw
+      .replace(/&amp;/g, "&")
+      .replace(/&#039;/g, "'")
+      .replace(/&quot;/g, '"');
+
+    // Split by |, -, /, –
+    const parts = decoded.split(/\s*(?:\||\/|-|–|—)\s*/);
+    for (let part of parts) {
+      part = part
+        .replace(/^(?:xem\s+phim|phim)\s+/i, "")
+        .replace(/\s+(?:tập|tap|ep)\s*\d+.*$/i, "")
+        .replace(
+          /\s+(?:vietsub|thuyết\s*minh|lồng\s*tiếng|full\s*hd|hd|trọn\s*bộ|mới\s*nhất|\(\d{4}\)).*$/i,
+          ""
+        )
+        .trim();
+
+      if (
+        part.length >= 2 &&
+        part.length <= 60 &&
+        !/^(rophim|motchill|phimmoi|subnhanh|chillhay|kkphim|ophim|trang chủ)/i.test(
+          part
+        )
+      ) {
+        if (!candidates.includes(part)) {
+          candidates.push(part);
+        }
+      }
+    }
+  }
+  return candidates;
+}
+
 function extractVideoFromHtml(html, baseUrl) {
   if (!html) return null;
 
@@ -270,7 +310,7 @@ function extractVideoFromHtml(html, baseUrl) {
       type: "hls",
       url: bestM3u8,
       sandbox: false,
-      extractedMethod: "Luồng video gốc (.m3u8 tự đồng bộ)",
+      extractedMethod: "Luồng video gốc (.m3u8)",
     };
   }
 
@@ -284,7 +324,7 @@ function extractVideoFromHtml(html, baseUrl) {
       type: "video",
       url: mp4Matches[0],
       sandbox: false,
-      extractedMethod: "File video gốc (.mp4 tự đồng bộ)",
+      extractedMethod: "File video gốc (.mp4)",
     };
   }
 
@@ -300,13 +340,12 @@ function extractVideoFromHtml(html, baseUrl) {
       type: "iframe",
       url: embedUrl,
       sandbox: true,
-      extractedMethod: "Trình phát nhúng (Player)",
+      extractedMethod: "Khung trình phát (Player)",
     };
   }
 
-  // D. Inner <iframe src="...">
+  // D. Inner <iframe src="..."> (ONLY accept verified player iframes)
   const iframeRegex = /<iframe[^>]+(?:src|data-src)=["']([^"']+)["'][^>]*>/gi;
-  const candidates = [];
   let match;
   while ((match = iframeRegex.exec(html)) !== null) {
     let src = match[1].trim();
@@ -318,32 +357,38 @@ function extractVideoFromHtml(html, baseUrl) {
       const queryStream = extractStreamFromQueryParams(resolved);
       if (queryStream) return queryStream;
 
-      let score = 0;
-      const lower = resolved.toLowerCase();
-      for (const kw of PLAYER_IFRAME_KEYWORDS) {
-        if (lower.includes(kw)) score += 2;
+      if (isPurePlayerUrl(resolved)) {
+        return {
+          type: "iframe",
+          url: resolved,
+          sandbox: true,
+          extractedMethod: "Khung trình phát (Player)",
+        };
       }
-      if (match[0].toLowerCase().includes("allowfullscreen")) score += 3;
-      candidates.push({ url: resolved, score });
     } catch {}
-  }
-
-  if (candidates.length > 0) {
-    candidates.sort((a, b) => b.score - a.score);
-    return {
-      type: "iframe",
-      url: candidates[0].url,
-      sandbox: true,
-      extractedMethod: "Khung trình phát (Player Iframe)",
-    };
   }
 
   return null;
 }
 
+/**
+ * Clean movie slug and episode number from ANY Vietnamese movie URL
+ * Supports Rophim (e.g. /xem-phim/ga-kim-thoa.p12345?ep=2), Motchill, Phimmoi, Subnhanh, etc.
+ */
 function extractMovieSlugAndEpisode(urlStr) {
   try {
     const u = new URL(urlStr);
+
+    let episodeNum = 1;
+    // Check query params ?ep=2, ?tap=2, ?episode=2
+    const epQuery =
+      u.searchParams.get("ep") ||
+      u.searchParams.get("tap") ||
+      u.searchParams.get("episode");
+    if (epQuery && /^\d+$/.test(epQuery)) {
+      episodeNum = parseInt(epQuery, 10) || 1;
+    }
+
     const segments = u.pathname
       .split("/")
       .map((s) => s.trim())
@@ -352,9 +397,8 @@ function extractMovieSlugAndEpisode(urlStr) {
 
     if (segments.length === 0) return null;
 
-    let episodeNum = 1;
     for (const seg of segments) {
-      const epMatch = seg.match(/(?:tap|ep|episode)-?(\d+)/i);
+      const epMatch = seg.match(/(?:^|-)(?:tap|ep|episode)-?(\d+)/i);
       if (epMatch && epMatch[1]) {
         episodeNum = parseInt(epMatch[1], 10) || 1;
       }
@@ -371,6 +415,8 @@ function extractMovieSlugAndEpisode(urlStr) {
       "chi-tiet",
       "vietsub",
       "thuyet-minh",
+      "quoc-gia",
+      "the-loai",
     ]);
 
     const meaningful = segments.filter(
@@ -381,66 +427,81 @@ function extractMovieSlugAndEpisode(urlStr) {
     if (meaningful.length === 0) return null;
 
     let rawSlug = meaningful[meaningful.length - 1];
-    rawSlug = rawSlug.replace(/-(?:tap|ep)-\d+.*$/i, "");
+    // 1. Strip Rophim's .XXXXX ID suffix (e.g. "ga-kim-thoa.AbCdEf" -> "ga-kim-thoa")
+    rawSlug = rawSlug.split(".")[0];
+    // 2. Strip "-tap-1..." suffix
+    rawSlug = rawSlug.replace(/-(?:tap|ep|episode)-\d+.*$/i, "");
+    // 3. Also create a version without trailing numeric ID (e.g. "ga-kim-thoa-18492" -> "ga-kim-thoa")
+    const slugWithoutTrailingId = rawSlug.replace(/-[a-z0-9]{5,}$/i, "").replace(/-\d{3,}$/, "");
 
-    return { slug: rawSlug, episodeNum };
+    return {
+      slug: rawSlug,
+      cleanSlug: slugWithoutTrailingId || rawSlug,
+      episodeNum,
+    };
   } catch {
     return null;
   }
 }
 
-export async function lookupMovieStreamBySlugOrKeyword(
-  slugOrQuery,
-  episodeNum = 1
-) {
-  // 1. Try direct slug on KKPhim API (phimapi.com/phim/{slug})
-  try {
-    const res = await fetch(
-      `https://phimapi.com/phim/${encodeURIComponent(slugOrQuery)}`
-    );
-    if (res.ok) {
-      const data = await res.json();
-      const parsed = pickEpisodeFromApiData(data, episodeNum);
-      if (parsed) return parsed;
-    }
-  } catch {}
+/**
+ * Parse NguonC API response format (phim.nguonc.com)
+ */
+function pickEpisodeFromNguonCData(data, episodeNum = 1) {
+  const movie = data?.movie;
+  const episodesGroups = movie?.episodes;
+  if (!Array.isArray(episodesGroups) || episodesGroups.length === 0) return null;
 
-  // 2. Try direct slug on OPhim API (ophim1.com/phim/{slug})
-  try {
-    const res = await fetch(
-      `https://ophim1.com/phim/${encodeURIComponent(slugOrQuery)}`
-    );
-    if (res.ok) {
-      const data = await res.json();
-      const parsed = pickEpisodeFromApiData(data, episodeNum);
-      if (parsed) return parsed;
-    }
-  } catch {}
+  const items = episodesGroups[0]?.items;
+  if (!Array.isArray(items) || items.length === 0) return null;
 
-  // 3. Try searching KKPhim by keyword derived from slug
-  const keyword = slugOrQuery.replace(/-/g, " ").trim();
-  if (keyword.length >= 2) {
-    try {
-      const searchRes = await fetch(
-        `https://phimapi.com/v1/api/tim-kiem?keyword=${encodeURIComponent(
-          keyword
-        )}&limit=5`
-      );
-      if (searchRes.ok) {
-        const searchData = await searchRes.json();
-        const items = searchData?.data?.items || [];
-        if (items.length > 0 && items[0].slug) {
-          const detailRes = await fetch(
-            `https://phimapi.com/phim/${items[0].slug}`
-          );
-          if (detailRes.ok) {
-            const detailData = await detailRes.json();
-            const parsed = pickEpisodeFromApiData(detailData, episodeNum);
-            if (parsed) return parsed;
-          }
-        }
-      }
-    } catch {}
+  const targetIndex = Math.max(0, Math.min(items.length - 1, episodeNum - 1));
+  const matchedEp =
+    items.find((ep) => {
+      const m = (ep.slug || ep.name || "").match(/(\d+)/);
+      return m && parseInt(m[1], 10) === episodeNum;
+    }) || items[targetIndex];
+
+  if (!matchedEp) return null;
+
+  const allEpisodes = items.map((ep, idx) => ({
+    name: ep.name ? `Tập ${ep.name}` : `Tập ${idx + 1}`,
+    slug: ep.slug || `${idx + 1}`,
+    link_m3u8: ep.m3u8 || "",
+    link_embed: ep.embed || "",
+  }));
+
+  if (matchedEp.m3u8) {
+    return {
+      type: "hls",
+      url: matchedEp.m3u8,
+      sandbox: false,
+      movieTitle: `${movie.name || "Phim"} — Tập ${matchedEp.name || episodeNum}`,
+      episodes: allEpisodes,
+      currentEpisodeIndex: items.indexOf(matchedEp),
+      extractedMethod: "Luồng video thuần (.m3u8)",
+    };
+  }
+
+  if (matchedEp.embed) {
+    const queryStream = extractStreamFromQueryParams(matchedEp.embed);
+    if (queryStream) {
+      return {
+        ...queryStream,
+        movieTitle: `${movie.name || "Phim"} — Tập ${matchedEp.name || episodeNum}`,
+        episodes: allEpisodes,
+        currentEpisodeIndex: items.indexOf(matchedEp),
+      };
+    }
+    return {
+      type: "iframe",
+      url: matchedEp.embed,
+      sandbox: true,
+      movieTitle: `${movie.name || "Phim"} — Tập ${matchedEp.name || episodeNum}`,
+      episodes: allEpisodes,
+      currentEpisodeIndex: items.indexOf(matchedEp),
+      extractedMethod: "Khung trình phát (Player)",
+    };
   }
 
   return null;
@@ -482,7 +543,7 @@ function pickEpisodeFromApiData(data, episodeNum = 1) {
       movieTitle: `${movieInfo?.name || "Phim"} — ${matchedEp.name || ""}`,
       episodes: allEpisodes,
       currentEpisodeIndex: serverData.indexOf(matchedEp),
-      extractedMethod: "Luồng video thuần (.m3u8 tự đồng bộ)",
+      extractedMethod: "Luồng video thuần (.m3u8)",
     };
   }
 
@@ -503,53 +564,229 @@ function pickEpisodeFromApiData(data, episodeNum = 1) {
       movieTitle: `${movieInfo?.name || "Phim"} — ${matchedEp.name || ""}`,
       episodes: allEpisodes,
       currentEpisodeIndex: serverData.indexOf(matchedEp),
-      extractedMethod: "Trình phát thuần (Player Embed)",
+      extractedMethod: "Khung trình phát (Player)",
     };
   }
 
   return null;
 }
 
-export async function searchMoviesByKeyword(keyword) {
-  if (!keyword || !keyword.trim()) return [];
-  try {
-    const res = await fetch(
-      `https://phimapi.com/v1/api/tim-kiem?keyword=${encodeURIComponent(
-        keyword.trim()
-      )}&limit=8`
-    );
-    if (!res.ok) return [];
-    const data = await res.json();
-    const items = data?.data?.items || [];
-    const cdnDomain = data?.data?.APP_DOMAIN_CDN_IMAGE || "https://phimimg.com";
-    return items.map((item) => ({
-      name: item.name,
-      origin_name: item.origin_name,
-      slug: item.slug,
-      year: item.year,
-      episode_current: item.episode_current,
-      quality: item.quality,
-      lang: item.lang,
-      poster: item.poster_url?.startsWith("http")
-        ? item.poster_url
-        : `${cdnDomain}/${item.poster_url}`,
-    }));
-  } catch {
-    return [];
+/**
+ * Query KKPhim (phimapi.com), OPhim (ophim1.com), and NguonC (phim.nguonc.com)
+ * by slug or keyword to get a 100% pure video stream!
+ */
+export async function lookupMovieStreamBySlugOrKeyword(
+  slugOrQuery,
+  episodeNum = 1
+) {
+  if (!slugOrQuery) return null;
+  const cleanSlug = slugOrQuery
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "");
+
+  // 1. Direct slug lookup across all 3 CDNs in parallel
+  if (cleanSlug.length >= 2 && !slugOrQuery.includes(" ")) {
+    try {
+      const results = await Promise.allSettled([
+        fetch(`https://phimapi.com/phim/${encodeURIComponent(cleanSlug)}`).then(
+          (r) => (r.ok ? r.json() : null)
+        ),
+        fetch(`https://ophim1.com/phim/${encodeURIComponent(cleanSlug)}`).then(
+          (r) => (r.ok ? r.json() : null)
+        ),
+        fetch(
+          `https://phim.nguonc.com/api/film/${encodeURIComponent(cleanSlug)}`
+        ).then((r) => (r.ok ? r.json() : null)),
+      ]);
+
+      for (let i = 0; i < results.length; i++) {
+        if (results[i].status === "fulfilled" && results[i].value) {
+          const data = results[i].value;
+          const parsed =
+            i === 2
+              ? pickEpisodeFromNguonCData(data, episodeNum)
+              : pickEpisodeFromApiData(data, episodeNum);
+          if (parsed && parsed.type === "hls") return parsed;
+          if (parsed) return parsed;
+        }
+      }
+    } catch {}
   }
+
+  // 2. Keyword search across KKPhim, OPhim, and NguonC
+  const keyword = slugOrQuery.replace(/-/g, " ").trim();
+  if (keyword.length < 2) return null;
+
+  // 2a. KKPhim search
+  try {
+    const searchRes = await fetch(
+      `https://phimapi.com/v1/api/tim-kiem?keyword=${encodeURIComponent(
+        keyword
+      )}&limit=5`
+    );
+    if (searchRes.ok) {
+      const searchData = await searchRes.json();
+      const items = searchData?.data?.items || [];
+      if (items.length > 0 && items[0].slug) {
+        const detailRes = await fetch(
+          `https://phimapi.com/phim/${items[0].slug}`
+        );
+        if (detailRes.ok) {
+          const detailData = await detailRes.json();
+          const parsed = pickEpisodeFromApiData(detailData, episodeNum);
+          if (parsed) return parsed;
+        }
+      }
+    }
+  } catch {}
+
+  // 2b. NguonC search
+  try {
+    const searchRes = await fetch(
+      `https://phim.nguonc.com/api/films/search?keyword=${encodeURIComponent(
+        keyword
+      )}`
+    );
+    if (searchRes.ok) {
+      const searchData = await searchRes.json();
+      const items = searchData?.items || [];
+      if (items.length > 0 && items[0].slug) {
+        const detailRes = await fetch(
+          `https://phim.nguonc.com/api/film/${items[0].slug}`
+        );
+        if (detailRes.ok) {
+          const detailData = await detailRes.json();
+          const parsed = pickEpisodeFromNguonCData(detailData, episodeNum);
+          if (parsed) return parsed;
+        }
+      }
+    }
+  } catch {}
+
+  // 2c. OPhim search
+  try {
+    const searchRes = await fetch(
+      `https://ophim1.com/v1/api/tim-kiem?keyword=${encodeURIComponent(
+        keyword
+      )}&limit=5`
+    );
+    if (searchRes.ok) {
+      const searchData = await searchRes.json();
+      const items = searchData?.data?.items || [];
+      if (items.length > 0 && items[0].slug) {
+        const detailRes = await fetch(
+          `https://ophim1.com/phim/${items[0].slug}`
+        );
+        if (detailRes.ok) {
+          const detailData = await detailRes.json();
+          const parsed = pickEpisodeFromApiData(detailData, episodeNum);
+          if (parsed) return parsed;
+        }
+      }
+    }
+  } catch {}
+
+  return null;
 }
 
+export async function searchMoviesByKeyword(keyword) {
+  if (!keyword || !keyword.trim()) return [];
+  const q = keyword.trim();
+  const combined = [];
+  const seenSlugs = new Set();
+
+  try {
+    const [kkRes, ncRes] = await Promise.allSettled([
+      fetch(
+        `https://phimapi.com/v1/api/tim-kiem?keyword=${encodeURIComponent(
+          q
+        )}&limit=8`
+      ).then((r) => (r.ok ? r.json() : null)),
+      fetch(
+        `https://phim.nguonc.com/api/films/search?keyword=${encodeURIComponent(
+          q
+        )}`
+      ).then((r) => (r.ok ? r.json() : null)),
+    ]);
+
+    if (kkRes.status === "fulfilled" && kkRes.value) {
+      const data = kkRes.value;
+      const items = data?.data?.items || [];
+      const cdnDomain =
+        data?.data?.APP_DOMAIN_CDN_IMAGE || "https://phimimg.com";
+      for (const item of items) {
+        if (!seenSlugs.has(item.slug)) {
+          seenSlugs.add(item.slug);
+          combined.push({
+            name: item.name,
+            origin_name: item.origin_name || "",
+            slug: item.slug,
+            year: item.year || "",
+            episode_current: item.episode_current || "Full",
+            quality: item.quality || "HD",
+            lang: item.lang || "Vietsub",
+            poster: item.poster_url?.startsWith("http")
+              ? item.poster_url
+              : `${cdnDomain}/${item.poster_url}`,
+          });
+        }
+      }
+    }
+
+    if (ncRes.status === "fulfilled" && ncRes.value) {
+      const items = ncRes.value?.items || [];
+      for (const item of items.slice(0, 6)) {
+        if (!seenSlugs.has(item.slug)) {
+          seenSlugs.add(item.slug);
+          combined.push({
+            name: item.name,
+            origin_name: item.original_name || "",
+            slug: item.slug,
+            year: "",
+            episode_current: item.current_episode || "Full",
+            quality: item.quality || "HD",
+            lang: item.language || "Vietsub",
+            poster: item.thumb_url || item.poster_url || "",
+          });
+        }
+      }
+    }
+  } catch {}
+
+  return combined;
+}
+
+/**
+ * Master function: Resolves ANY user input to ONLY a pure video stream or pure player!
+ * NEVER returns a full webpage URL.
+ */
 export async function resolvePureVideoMedia(rawInput) {
   if (!rawInput || !rawInput.trim()) return null;
   const trimmed = rawInput.trim();
 
+  // Prevent user from accidentally pasting the CineParty invite URL itself into the movie box
+  if (
+    trimmed.includes("khiem292.github.io/cineparty") ||
+    (typeof window !== "undefined" &&
+      trimmed.includes(window.location.host) &&
+      trimmed.includes("?room="))
+  ) {
+    return {
+      error:
+        "Bạn vừa dán link mời phòng CineParty! Hãy dán link bộ phim cần xem hoặc bấm nút Tìm Phim nhé.",
+    };
+  }
+
   const looksLikeUrlOrIframe =
     /^https?:\/\//i.test(trimmed) ||
     /<iframe/i.test(trimmed) ||
-    /^[a-z0-9-]+\.(com|net|org|vn|io|tv|me|cc|to|xyz|info|biz|top|club|site|online|pro|live|stream|watch|video|gg|ly|be)\b/i.test(
+    /^[a-z0-9-]+\.(com|net|org|vn|io|tv|me|cc|to|xyz|info|biz|top|club|site|online|pro|live|stream|watch|video|gg|ly|be|life|cx|co|ink|fm)\b/i.test(
       trimmed
     );
 
+  // If user typed a movie name directly (e.g. "Gả Kim Thoa tập 2")
   if (!looksLikeUrlOrIframe) {
     let epNum = 1;
     const epMatch = trimmed.match(/(?:tập|tap|ep)\s*(\d+)/i);
@@ -567,11 +804,15 @@ export async function resolvePureVideoMedia(rawInput) {
         ...byKeyword,
       };
     }
+    return {
+      error: `Không tìm thấy phim "${cleanKeyword}". Hãy thử bấm nút Tìm Phim ở góc trên nhé!`,
+    };
   }
 
   const basic = parseMediaInput(trimmed);
   if (!basic) return null;
 
+  // 1. Direct YouTube, .m3u8 (HLS), or .mp4 file
   if (
     basic.type === "youtube" ||
     basic.type === "hls" ||
@@ -580,7 +821,7 @@ export async function resolvePureVideoMedia(rawInput) {
     return basic;
   }
 
-  // Check if URL has ?url=...m3u8
+  // 2. Check if URL has ?url=...m3u8 in query string
   const queryStream = extractStreamFromQueryParams(basic.url);
   if (queryStream) {
     return {
@@ -589,26 +830,12 @@ export async function resolvePureVideoMedia(rawInput) {
     };
   }
 
-  if (/<iframe[^>]+src=/i.test(rawInput)) {
+  // 3. Check if user explicitly pasted an <iframe src="..."> tag or a known pure player URL
+  if (/<iframe[^>]+src=/i.test(rawInput) || isPurePlayerUrl(basic.url)) {
     return basic;
   }
 
-  // Step 1: Try looking up movie slug first on Vietnamese movie APIs so we get a 100% syncable .m3u8 stream!
-  const slugInfo = extractMovieSlugAndEpisode(basic.url);
-  if (slugInfo && slugInfo.slug && slugInfo.slug.length >= 3) {
-    const apiStream = await lookupMovieStreamBySlugOrKeyword(
-      slugInfo.slug,
-      slugInfo.episodeNum
-    );
-    if (apiStream && apiStream.type === "hls") {
-      return {
-        ...basic,
-        ...apiStream,
-      };
-    }
-  }
-
-  // Step 2: Check known platforms (Google Drive, Vimeo, Dailymotion, Ok.ru, Bilibili...)
+  // 4. Check known platforms (Google Drive, Vimeo, Dailymotion, Ok.ru, Bilibili, Facebook Video, Streamtape...)
   const platformPlayer = convertKnownPlatformToPlayerUrl(basic.url);
   if (platformPlayer) {
     return {
@@ -617,33 +844,64 @@ export async function resolvePureVideoMedia(rawInput) {
     };
   }
 
-  // Step 3: Scrape target webpage HTML for .m3u8, .mp4, or inner player <iframe>
+  // 5. Extract movie slug & episode from the movie website URL (Rophim, Motchill, Phimmoi, etc.)
+  const slugInfo = extractMovieSlugAndEpisode(basic.url);
+  if (slugInfo) {
+    // Try cleanSlug first (e.g. "ga-kim-thoa")
+    const byCleanSlug = await lookupMovieStreamBySlugOrKeyword(
+      slugInfo.cleanSlug,
+      slugInfo.episodeNum
+    );
+    if (byCleanSlug) {
+      return {
+        ...basic,
+        ...byCleanSlug,
+      };
+    }
+    if (slugInfo.slug !== slugInfo.cleanSlug) {
+      const byRawSlug = await lookupMovieStreamBySlugOrKeyword(
+        slugInfo.slug,
+        slugInfo.episodeNum
+      );
+      if (byRawSlug) {
+        return {
+          ...basic,
+          ...byRawSlug,
+        };
+      }
+    }
+  }
+
+  // 6. Scrape the webpage HTML via CORS proxy:
+  //    a) Check for direct .m3u8 / .mp4 / pure player iframe inside HTML
+  //    b) Extract the Vietnamese/English movie title from <title> / og:title and search the 3 Movie APIs!
   const html = await fetchHtmlViaProxy(basic.url);
   if (html) {
     const extracted = extractVideoFromHtml(html, basic.url);
     if (extracted) {
-      // If extracted is an iframe, also try once to see if that iframe page contains a raw .m3u8!
-      if (extracted.type === "iframe" && extracted.url) {
-        const innerHtml = await fetchHtmlViaProxy(extracted.url);
-        if (innerHtml) {
-          const innerExtracted = extractVideoFromHtml(innerHtml, extracted.url);
-          if (
-            innerExtracted &&
-            (innerExtracted.type === "hls" || innerExtracted.type === "video")
-          ) {
-            return {
-              ...basic,
-              ...innerExtracted,
-            };
-          }
-        }
-      }
       return {
         ...basic,
         ...extracted,
       };
     }
+
+    const titleCandidates = extractTitleCandidatesFromHtml(html);
+    const epNum = slugInfo?.episodeNum || 1;
+    for (const candidate of titleCandidates) {
+      const byTitle = await lookupMovieStreamBySlugOrKeyword(candidate, epNum);
+      if (byTitle) {
+        return {
+          ...basic,
+          ...byTitle,
+        };
+      }
+    }
   }
 
-  return basic;
+  // NEVER return the full webpage in an iframe!
+  return {
+    error:
+      "Trang web này khóa mã nguồn video. Bạn hãy nhập thẳng Tên Phim vào ô trên (VD: Gả Kim Thoa) hoặc bấm nút Tìm Phim để phát trực tiếp Video thuần 100% nhé!",
+    suggestedQuery: slugInfo?.cleanSlug?.replace(/-/g, " ") || "",
+  };
 }
