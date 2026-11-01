@@ -159,11 +159,10 @@ export default function HomePage() {
           <div className="feature-grid">
             <div className="feature-card">
               <Code2 size={20} color="#a78bfa" />
-              <h3>Link Nhúng Iframe & Chặn Popup</h3>
+              <h3>Chỉ Hiện Riêng Video</h3>
               <p>
-                Dán mã <code>&lt;iframe&gt;</code> hoặc link từ web phim. Tích
-                hợp Sandbox chặn quảng cáo tự mở tab và bộ đếm ngược 3-2-1 đồng
-                bộ.
+                Dán link web phim bất kỳ hoặc tìm tên phim: hệ thống tự động lọc
+                bỏ giao diện web ngoài để chỉ hiển thị khung phát video.
               </p>
             </div>
 
@@ -171,17 +170,17 @@ export default function HomePage() {
               <MonitorUp size={20} color="#22d3ee" />
               <h3>Chia Sẻ Màn Hình 60FPS</h3>
               <p>
-                Web phim chặn nhúng? Phát trực tiếp tab phim kèm âm thanh gốc
-                qua WebRTC cho cả phòng xem mượt mà 100%.
+                Phát trực tiếp tab phim kèm âm thanh gốc qua WebRTC cho cả
+                phòng xem mượt mà 100%.
               </p>
             </div>
 
             <div className="feature-card">
               <PlayCircle size={20} color="#34d399" />
-              <h3>Đồng Bộ Play / Pause / Seek</h3>
+              <h3>Vào Sau Xem Tiếp Ngay Đoạn Đó</h3>
               <p>
-                Tự động đồng bộ từng giây khi xem nguồn <code>.m3u8</code>{" "}
-                (HLS), <code>.mp4</code> hoặc YouTube cùng bạn bè.
+                Tự động đồng bộ từng giây thời gian thực. Người vào phòng sau
+                tự động nhảy tới đúng phút:giây đang chiếu, không cần bấm cùng lúc!
               </p>
             </div>
 

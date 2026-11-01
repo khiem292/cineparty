@@ -176,7 +176,7 @@ export function createP2PRoomClient(roomId) {
         extractedMethod: media.extractedMethod || "",
       };
       roomState.playback = {
-        isPlaying: false,
+        isPlaying: true,
         currentTime: 0,
         updatedAt: Date.now(),
         controllerName: user.name,
@@ -231,6 +231,28 @@ export function createP2PRoomClient(roomId) {
         },
         senderId
       );
+      return;
+    }
+
+    if (event === "time-heartbeat") {
+      // Only accept authoritative heartbeat from the room Host
+      if (roomState.hostId !== senderId) return;
+      if (typeof payload?.currentTime === "number" && !isNaN(payload.currentTime)) {
+        roomState.playback = {
+          isPlaying: Boolean(payload?.isPlaying),
+          currentTime: Math.max(0, payload.currentTime),
+          updatedAt: Date.now(),
+          controllerName: user.name,
+        };
+        broadcastFromHost(
+          "playback-heartbeat",
+          {
+            playback: roomState.playback,
+            senderId,
+          },
+          senderId
+        );
+      }
       return;
     }
 

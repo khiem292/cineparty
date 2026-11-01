@@ -12,16 +12,13 @@ import {
   MonitorUp,
   MonitorOff,
   Play,
-  Pause,
   RotateCcw,
   Shield,
   ShieldOff,
-  Timer,
   Send,
   HelpCircle,
   Lock,
   Unlock,
-  Sparkles,
   Maximize2,
   Minimize2,
   Share2,
@@ -31,11 +28,12 @@ import {
   ListVideo,
   X,
 } from "lucide-react";
-import { formatTime, parseTimeInput } from "@/lib/urlParser";
+import { formatTime } from "@/lib/urlParser";
 import {
   resolvePureVideoMedia,
   searchMoviesByKeyword,
   lookupMovieStreamBySlugOrKeyword,
+  appendStartTimeToIframeUrl,
 } from "@/lib/videoExtractor";
 import { createP2PRoomClient } from "@/lib/p2pRoomClient";
 import SyncedVideoPlayer from "@/components/SyncedVideoPlayer";
@@ -64,7 +62,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
     extractedMethod: "",
   });
   const [playback, setPlayback] = useState({
-    isPlaying: false,
+    isPlaying: true,
     currentTime: 0,
     updatedAt: Date.now(),
     controllerName: "Hệ thống",
@@ -77,7 +75,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
   const [urlInput, setUrlInput] = useState("");
   const [isExtracting, setIsExtracting] = useState(false);
   const [copiedInvite, setCopiedInvite] = useState(false);
-  const [sidebarTab, setSidebarTab] = useState("chat"); // 'chat' | 'users' | 'episodes' | 'help'
+  const [sidebarTab, setSidebarTab] = useState("chat"); // 'chat' | 'users' | 'help'
   const [messages, setMessages] = useState([]);
   const [chatInput, setChatInput] = useState("");
   const [floatingReactions, setFloatingReactions] = useState([]);
@@ -87,8 +85,8 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
 
   // Focus / Crop Webpage Mode for stubborn iframes
   const [cropWebpage, setCropWebpage] = useState(false);
-  const [cropOffsetY, setCropOffsetY] = useState(140); // px of top header to hide
-  const [cropZoom, setCropZoom] = useState(1.25);
+  const [cropOffsetY, setCropOffsetY] = useState(140);
+  const [cropZoom] = useState(1.25);
 
   // Built-in Movie Search Modal
   const [showSearchModal, setShowSearchModal] = useState(false);
@@ -96,11 +94,8 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
 
-  // Countdown & Reference Timer for Iframe Embeds
-  const [countdownValue, setCountdownValue] = useState(null);
-  const [countdownInfo, setCountdownInfo] = useState(null);
   const [displayTimer, setDisplayTimer] = useState(0);
-  const [targetTimeStr, setTargetTimeStr] = useState("00:00");
+  const [iframeStartOffset, setIframeStartOffset] = useState(0);
   const [iframeKey, setIframeKey] = useState(0);
 
   const iframeRef = useRef(null);
@@ -161,15 +156,18 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
         setShowMobileUrlBar(false);
       }
       setUrlInput(nextMedia?.rawInput || nextMedia?.url || "");
-      setPlayback(
-        state.playback || {
-          isPlaying: false,
-          currentTime: 0,
-          updatedAt: Date.now(),
-          controllerName: "Hệ thống",
-        }
-      );
-      setDisplayTimer(state.playback?.currentTime || 0);
+      const incomingPlayback = state.playback || {
+        isPlaying: true,
+        currentTime: 0,
+        updatedAt: Date.now(),
+        controllerName: "Hệ thống",
+      };
+      setPlayback({
+        ...incomingPlayback,
+        updatedAt: Date.now(),
+      });
+      setDisplayTimer(incomingPlayback.currentTime || 0);
+      setIframeStartOffset(Math.floor(incomingPlayback.currentTime || 0));
       setScreenSharerId(state.screenSharerId || null);
       setScreenSharerName(state.screenSharerName || null);
       setMessages(state.messages || []);
@@ -190,8 +188,12 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
       }) => {
         setMedia(newMedia);
         setUrlInput(newMedia.rawInput || newMedia.url || "");
-        setPlayback(newPlayback);
+        setPlayback({
+          ...newPlayback,
+          updatedAt: Date.now(),
+        });
         setDisplayTimer(newPlayback.currentTime || 0);
+        setIframeStartOffset(0);
         setScreenSharerId(sharerId || null);
         setScreenSharerName(sharerName || null);
         setCropWebpage(false);
@@ -206,7 +208,8 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
       setIframeKey((k) => k + 1);
     });
 
-    s.on("playback-update", ({ action, playback: newPlayback }) => {
+    const handleIncomingPlayback = ({ action, playback: newPlayback }) => {
+      if (!newPlayback) return;
       setPlayback({
         ...newPlayback,
         updatedAt: Date.now(),
@@ -229,7 +232,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
               "*"
             );
           }
-          if (action === "seek") {
+          if (action === "seek" || action === "sync") {
             win.postMessage(
               JSON.stringify({
                 method: "setCurrentTime",
@@ -240,19 +243,10 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
           }
         } catch {}
       }
-    });
+    };
 
-    s.on("countdown-started", ({ startedBy, targetTime }) => {
-      setCountdownInfo({ startedBy, targetTime });
-      setCountdownValue(3);
-      setTimeout(() => setCountdownValue(2), 1000);
-      setTimeout(() => setCountdownValue(1), 2000);
-      setTimeout(() => setCountdownValue("GO"), 3000);
-      setTimeout(() => {
-        setCountdownValue(null);
-        setCountdownInfo(null);
-      }, 4300);
-    });
+    s.on("playback-update", handleIncomingPlayback);
+    s.on("playback-heartbeat", handleIncomingPlayback);
 
     s.on("permissions-updated", ({ allowAllControl: allowed }) => {
       setAllowAllControl(allowed);
@@ -448,15 +442,6 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
     });
   };
 
-  const handleStartCountdown = () => {
-    if (!socket) return;
-    const targetSeconds = parseTimeInput(targetTimeStr);
-    socket.emit("start-countdown", {
-      roomId,
-      targetTime: targetSeconds,
-    });
-  };
-
   const handleToggleSandbox = () => {
     if (!canControl || !socket) return;
     socket.emit("toggle-sandbox", {
@@ -529,7 +514,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
               marginBottom: "18px",
             }}
           >
-            Nhập tên hiển thị của bạn để mọi người trong phòng nhận ra bạn nhé:
+            Nhập tên hiển thị của bạn để vào xem ngay đoạn phim mọi người đang xem:
           </p>
           <form
             onSubmit={(e) => {
@@ -554,13 +539,18 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
               />
             </div>
             <button type="submit" className="btn-primary">
-              Vào Phòng Xem Chung
+              Vào Xem Ngay
             </button>
           </form>
         </div>
       </div>
     );
   }
+
+  const effectiveIframeUrl =
+    media.type === "iframe" && media.url
+      ? appendStartTimeToIframeUrl(media.url, iframeStartOffset)
+      : "";
 
   return (
     <div className="room-layout">
@@ -589,7 +579,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
         </div>
       )}
 
-      {/* Built-in Movie Search Modal (Play Pure Video Only) */}
+      {/* Built-in Movie Search Modal */}
       {showSearchModal && (
         <div
           style={{
@@ -627,9 +617,16 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                 justifyContent: "space-between",
               }}
             >
-              <div style={{ display: "flex", alignItems: "center", gap: "8px", fontWeight: 700 }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  fontWeight: 700,
+                }}
+              >
                 <Film size={18} color="#a78bfa" />
-                <span>Tìm Phim Trực Tiếp (Chỉ Hiện Video Thuần • Tự Đồng Bộ)</span>
+                <span>Tìm Phim Trực Tiếp (Chỉ Hiện Video • Tự Đồng Bộ)</span>
               </div>
               <button
                 type="button"
@@ -688,7 +685,9 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                     fontSize: "0.88rem",
                   }}
                 >
-                  Nhập tên phim bất kỳ để phát trực tiếp luồng <strong>Video thuần (.m3u8)</strong> không dính giao diện web ngoài và tự động đồng bộ Play/Pause/Tua cho cả phòng!
+                  Nhập tên phim bất kỳ để phát trực tiếp luồng{" "}
+                  <strong>Video thuần (.m3u8)</strong>. Người vào sau sẽ tự động
+                  nhảy tới đúng giây đang chiếu mà không cần bấm cùng lúc!
                 </div>
               )}
 
@@ -774,7 +773,11 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                   <button
                     type="button"
                     className="btn-primary"
-                    style={{ width: "auto", padding: "8px 12px", fontSize: "0.8rem" }}
+                    style={{
+                      width: "auto",
+                      padding: "8px 12px",
+                      fontSize: "0.8rem",
+                    }}
                   >
                     <Play size={14} />
                     <span>Phát</span>
@@ -801,7 +804,10 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
             }}
             title="Về trang chủ"
           >
-            <div className="brand-icon" style={{ width: "30px", height: "30px" }}>
+            <div
+              className="brand-icon"
+              style={{ width: "30px", height: "30px" }}
+            >
               <Film size={16} />
             </div>
             <span className="hide-on-mobile" style={{ fontSize: "1.08rem" }}>
@@ -810,7 +816,10 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
           </button>
 
           <div className="room-badge">
-            <span className="hide-on-mobile" style={{ color: "var(--text-secondary)" }}>
+            <span
+              className="hide-on-mobile"
+              style={{ color: "var(--text-secondary)" }}
+            >
               Mã phòng:
             </span>
             <span className="room-code-text">#{roomId}</span>
@@ -821,7 +830,11 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
             onClick={handleCopyInvite}
             className="btn-secondary hide-on-mobile"
           >
-            {copiedInvite ? <Check size={15} color="#10b981" /> : <Copy size={15} />}
+            {copiedInvite ? (
+              <Check size={15} color="#10b981" />
+            ) : (
+              <Copy size={15} />
+            )}
             <span>{copiedInvite ? "Đã chép link!" : "Copy Link Mời"}</span>
           </button>
 
@@ -831,7 +844,11 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
             className="btn-secondary mobile-only"
             title="Chia sẻ link phòng"
           >
-            {copiedInvite ? <Check size={14} color="#10b981" /> : <Share2 size={14} />}
+            {copiedInvite ? (
+              <Check size={14} color="#10b981" />
+            ) : (
+              <Share2 size={14} />
+            )}
             <span>{copiedInvite ? "Đã chép" : "Mời"}</span>
           </button>
         </div>
@@ -842,7 +859,10 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
             onClick={() => setShowSearchModal(true)}
             disabled={!canControl}
             className="btn-secondary"
-            style={{ borderColor: "rgba(139, 92, 246, 0.5)", color: "#ddd6fe" }}
+            style={{
+              borderColor: "rgba(139, 92, 246, 0.5)",
+              color: "#ddd6fe",
+            }}
             title="Tìm phim phát trực tiếp không dính giao diện web"
           >
             <Search size={14} color="#a78bfa" />
@@ -852,7 +872,9 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
           <button
             type="button"
             onClick={() => setShowMobileUrlBar((v) => !v)}
-            className={`btn-secondary mobile-only ${showMobileUrlBar ? "active-mode" : ""}`}
+            className={`btn-secondary mobile-only ${
+              showMobileUrlBar ? "active-mode" : ""
+            }`}
           >
             <Link2 size={14} />
             <span>Dán Link</span>
@@ -865,7 +887,11 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
               className="btn-secondary mobile-only"
               title="Phóng to / Thu nhỏ khung phim"
             >
-              {mobileExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+              {mobileExpanded ? (
+                <Minimize2 size={14} />
+              ) : (
+                <Maximize2 size={14} />
+              )}
             </button>
           )}
 
@@ -887,7 +913,9 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                 <Lock size={14} color="#f59e0b" />
               )}
               <span className="hide-on-mobile">
-                {allowAllControl ? "Mọi người được chỉnh" : "Chỉ Chủ phòng chỉnh"}
+                {allowAllControl
+                  ? "Mọi người được chỉnh"
+                  : "Chỉ Chủ phòng chỉnh"}
               </span>
             </button>
           )}
@@ -905,7 +933,9 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
           {/* URL & Auto-Extractor Toolbar */}
           <div
             className={`url-toolbar ${
-              !showMobileUrlBar && media.type !== "empty" ? "mobile-collapsed" : ""
+              !showMobileUrlBar && media.type !== "empty"
+                ? "mobile-collapsed"
+                : ""
             }`}
           >
             <form
@@ -919,7 +949,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                   className="url-input"
                   placeholder={
                     canControl
-                      ? "Dán link phim bất kỳ (tự động tách lấy riêng khung Video) hoặc nhập tên phim..."
+                      ? "Dán link phim bất kỳ hoặc nhập thẳng tên phim (tự động tách lấy riêng Video & đồng bộ)..."
                       : "Chỉ Chủ phòng mới đổi được phim"
                   }
                   value={urlInput}
@@ -931,10 +961,16 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                 type="submit"
                 className="btn-primary"
                 disabled={!canControl || isExtracting}
-                style={{ width: "auto", padding: "8px 14px", fontSize: "0.84rem" }}
+                style={{
+                  width: "auto",
+                  padding: "8px 14px",
+                  fontSize: "0.84rem",
+                }}
               >
                 {isExtracting ? <Loader2 size={14} /> : <Play size={14} />}
-                <span>{isExtracting ? "Đang tách video..." : "Phát Video"}</span>
+                <span>
+                  {isExtracting ? "Đang tách video..." : "Phát Video"}
+                </span>
               </button>
             </form>
 
@@ -971,31 +1007,22 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
           >
             {isExtracting && (
               <div className="countdown-overlay" style={{ zIndex: 45 }}>
-                <Loader2 size={42} color="#a78bfa" style={{ marginBottom: "12px" }} />
+                <Loader2
+                  size={42}
+                  color="#a78bfa"
+                  style={{ marginBottom: "12px" }}
+                />
                 <h3 style={{ fontSize: "1.05rem", marginBottom: "6px" }}>
                   Đang tự động tách khung Video gốc...
                 </h3>
-                <p style={{ fontSize: "0.84rem", color: "var(--text-secondary)" }}>
-                  Hệ thống đang loại bỏ giao diện trang web ngoài để chỉ lấy riêng trình phát video cho bạn.
-                </p>
-              </div>
-            )}
-
-            {countdownValue && (
-              <div className="countdown-overlay">
-                <div className="countdown-number">
-                  {countdownValue === "GO" ? "BẤM PLAY!" : countdownValue}
-                </div>
                 <p
                   style={{
-                    fontSize: "0.95rem",
-                    color: "#e5e7eb",
-                    maxWidth: "420px",
+                    fontSize: "0.84rem",
+                    color: "var(--text-secondary)",
                   }}
                 >
-                  {countdownInfo?.startedBy} đếm ngược! Hãy bấm{" "}
-                  <strong>Play (▶)</strong> tại mốc{" "}
-                  <strong>{formatTime(countdownInfo?.targetTime || 0)}</strong>!
+                  Hệ thống đang lọc bỏ giao diện web ngoài và kết nối đồng bộ tự
+                  động cho phòng.
                 </p>
               </div>
             )}
@@ -1004,7 +1031,9 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
               {floatingReactions.map((r) => (
                 <div key={r.id} className="floating-reaction-pill">
                   <span style={{ fontSize: "1.15rem" }}>{r.emoji}</span>
-                  <span style={{ color: "var(--text-secondary)", fontWeight: 600 }}>
+                  <span
+                    style={{ color: "var(--text-secondary)", fontWeight: 600 }}
+                  >
                     {r.senderName}
                   </span>
                 </div>
@@ -1026,7 +1055,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                     marginBottom: "8px",
                   }}
                 >
-                  Rạp chiếu #{roomId} — Chỉ Hiện Riêng Video!
+                  Rạp chiếu #{roomId} — Tự Động Đồng Bộ Thời Gian Thực
                 </h2>
                 <p
                   style={{
@@ -1036,8 +1065,12 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                     marginBottom: "14px",
                   }}
                 >
-                  Khi bạn dán link trang web xem phim (hoặc nhập thẳng tên phim), hệ thống sẽ{" "}
-                  <strong>tự động lọc bỏ toàn bộ giao diện web ngoài</strong> để chỉ hiển thị duy nhất khung phát video!
+                  Chỉ hiển thị duy nhất khung Video.{" "}
+                  <strong>
+                    Ai vào phòng sau sẽ tự động nhảy tới đúng đoạn phim đang
+                    chiếu
+                  </strong>{" "}
+                  mà không cần bấm Play cùng lúc!
                 </p>
 
                 <div
@@ -1051,11 +1084,15 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                   <button
                     type="button"
                     className="btn-primary"
-                    style={{ width: "auto", padding: "9px 16px", fontSize: "0.84rem" }}
+                    style={{
+                      width: "auto",
+                      padding: "9px 16px",
+                      fontSize: "0.84rem",
+                    }}
                     onClick={() => setShowSearchModal(true)}
                   >
                     <Search size={15} />
-                    <span>Tìm Phim Phát Ngay (100% Chỉ Hiện Video)</span>
+                    <span>Tìm Phim Phát Ngay (Tự Đồng Bộ 100%)</span>
                   </button>
 
                   <button
@@ -1093,13 +1130,14 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                 media={media}
                 playback={playback}
                 canControl={canControl}
+                isHost={isHost}
                 onPlaybackAction={handlePlaybackAction}
                 socket={socket}
                 roomId={roomId}
               />
             )}
 
-            {media.type === "iframe" && media.url && (
+            {media.type === "iframe" && effectiveIframeUrl && (
               <div
                 style={{
                   width: "100%",
@@ -1109,9 +1147,9 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                 }}
               >
                 <iframe
-                  key={`${media.url}-${iframeKey}-${media.sandbox}`}
+                  key={`${effectiveIframeUrl}-${iframeKey}-${media.sandbox}`}
                   ref={iframeRef}
-                  src={media.url}
+                  src={effectiveIframeUrl}
                   className="player-iframe"
                   allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
                   allowFullScreen
@@ -1175,7 +1213,11 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                   className={`btn-secondary ${
                     media.currentEpisodeIndex === idx ? "active-mode" : ""
                   }`}
-                  style={{ padding: "4px 10px", fontSize: "0.76rem", flexShrink: 0 }}
+                  style={{
+                    padding: "4px 10px",
+                    fontSize: "0.76rem",
+                    flexShrink: 0,
+                  }}
                 >
                   {ep.name}
                 </button>
@@ -1183,94 +1225,71 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
             </div>
           )}
 
-          {/* Sync Control Strip */}
+          {/* Clean Automatic Sync Status Strip (No manual timer or countdown needed!) */}
           {media.type !== "empty" && media.type !== "screenshare" && (
             <div className="sync-control-bar">
-              {media.type === "iframe" ? (
-                <>
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "8px",
-                      flexShrink: 0,
-                    }}
-                  >
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "6px",
-                        background: "var(--bg-primary)",
-                        border: "1px solid var(--border-color)",
-                        padding: "5px 10px",
-                        borderRadius: "8px",
-                      }}
-                    >
-                      <Timer size={14} color="#a78bfa" />
-                      <span
-                        style={{
-                          fontFamily: "monospace",
-                          fontWeight: 800,
-                          fontSize: "0.92rem",
-                          color: playback.isPlaying ? "#34d399" : "#fbbf24",
-                        }}
-                      >
-                        {formatTime(displayTimer)}
-                      </span>
-                    </div>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  flexShrink: 0,
+                }}
+              >
+                <span
+                  style={{
+                    width: "8px",
+                    height: "8px",
+                    borderRadius: "50%",
+                    background: playback.isPlaying ? "#10b981" : "#f59e0b",
+                    boxShadow: playback.isPlaying
+                      ? "0 0 8px #10b981"
+                      : "none",
+                  }}
+                />
+                <span
+                  style={{
+                    fontSize: "0.8rem",
+                    color: "var(--text-secondary)",
+                  }}
+                >
+                  {media.movieTitle && (
+                    <strong style={{ color: "#c4b5fd", marginRight: "6px" }}>
+                      {media.movieTitle} •
+                    </strong>
+                  )}
+                  <strong style={{ color: "var(--text-primary)" }}>
+                    {playback.isPlaying ? "Đang phát tự động" : "Đang tạm dừng"}{" "}
+                    ({formatTime(displayTimer)})
+                  </strong>{" "}
+                  <span className="hide-on-mobile">
+                    — Ai vào sau tự động xem tiếp tại mốc này
+                  </span>
+                </span>
+              </div>
 
-                    <input
-                      type="text"
-                      value={targetTimeStr}
-                      onChange={(e) => setTargetTimeStr(e.target.value)}
-                      placeholder="00:00"
-                      title="Nhập mốc phút:giây muốn đồng bộ (VD: 12:30)"
-                      style={{
-                        width: "62px",
-                        padding: "5px 6px",
-                        background: "var(--bg-primary)",
-                        border: "1px solid var(--border-color)",
-                        borderRadius: "8px",
-                        color: "var(--text-primary)",
-                        fontFamily: "monospace",
-                        fontSize: "0.82rem",
-                        textAlign: "center",
-                      }}
-                    />
-
-                    <button
-                      type="button"
-                      onClick={handleStartCountdown}
-                      className="btn-primary"
-                      style={{
-                        width: "auto",
-                        padding: "6px 12px",
-                        fontSize: "0.78rem",
-                      }}
-                    >
-                      <Sparkles size={13} />
-                      <span>Đếm 3-2-1 Play</span>
-                    </button>
-                  </div>
-
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "6px",
-                      flexShrink: 0,
-                    }}
-                  >
-                    {/* Crop Webpage Header Button if a stubborn site still shows its header */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  flexShrink: 0,
+                }}
+              >
+                {media.type === "iframe" && (
+                  <>
                     <button
                       type="button"
                       onClick={() => setCropWebpage((v) => !v)}
-                      className={`btn-secondary ${cropWebpage ? "active-mode" : ""}`}
+                      className={`btn-secondary ${
+                        cropWebpage ? "active-mode" : ""
+                      }`}
                       title="Phóng to khung video & cắt bỏ thanh menu của trang web ngoài"
                     >
                       <Crop size={14} color="#22d3ee" />
-                      <span>{cropWebpage ? "Cắt Viền Web: BẬT" : "Cắt Viền Web"}</span>
+                      <span>
+                        {cropWebpage ? "Cắt Viền Web: BẬT" : "Cắt Viền Web"}
+                      </span>
                     </button>
 
                     {cropWebpage && (
@@ -1279,7 +1298,9 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                         min={0}
                         max={380}
                         value={cropOffsetY}
-                        onChange={(e) => setCropOffsetY(Number(e.target.value))}
+                        onChange={(e) =>
+                          setCropOffsetY(Number(e.target.value))
+                        }
                         title="Kéo để căn chỉnh vị trí khung video"
                         style={{ width: "75px", accentColor: "#8b5cf6" }}
                       />
@@ -1303,72 +1324,27 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                         {media.sandbox ? "Chặn QC: BẬT" : "Chặn QC: TẮT"}
                       </span>
                     </button>
+                  </>
+                )}
 
-                    <button
-                      type="button"
-                      onClick={() => setIframeKey((k) => k + 1)}
-                      className="btn-secondary"
-                      title="Tải lại khung Iframe"
-                    >
-                      <RotateCcw size={13} />
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "8px",
-                      flexShrink: 0,
-                    }}
+                {canControl && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handlePlaybackAction(
+                        "sync",
+                        displayTimer,
+                        playback.isPlaying
+                      )
+                    }
+                    className="btn-secondary"
+                    title="Đồng bộ tất cả mọi người theo thời gian máy bạn"
                   >
-                    <span
-                      style={{
-                        width: "8px",
-                        height: "8px",
-                        borderRadius: "50%",
-                        background: playback.isPlaying ? "#10b981" : "#f59e0b",
-                      }}
-                    />
-                    <span
-                      style={{
-                        fontSize: "0.8rem",
-                        color: "var(--text-secondary)",
-                      }}
-                    >
-                      {media.movieTitle && (
-                        <strong style={{ color: "#c4b5fd", marginRight: "6px" }}>
-                          {media.movieTitle} •
-                        </strong>
-                      )}
-                      <strong style={{ color: "var(--text-primary)" }}>
-                        {playback.isPlaying ? "Đang phát" : "Tạm dừng"} (
-                        {formatTime(displayTimer)})
-                      </strong>{" "}
-                      • {playback.controllerName}
-                    </span>
-                  </div>
-
-                  {canControl && (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        handlePlaybackAction(
-                          "sync",
-                          displayTimer,
-                          playback.isPlaying
-                        )
-                      }
-                      className="btn-secondary"
-                    >
-                      <RotateCcw size={13} />
-                      <span>Đồng bộ theo tôi</span>
-                    </button>
-                  )}
-                </>
-              )}
+                    <RotateCcw size={13} />
+                    <span>Đồng bộ ngay</span>
+                  </button>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -1400,7 +1376,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
               onClick={() => setSidebarTab("help")}
             >
               <HelpCircle size={14} />
-              <span>Mẹo Xem</span>
+              <span>Hướng Dẫn</span>
             </button>
           </div>
 
@@ -1604,22 +1580,14 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                 }}
               >
                 <h4 style={{ color: "var(--text-primary)", marginBottom: "4px" }}>
-                  ✨ Làm sao để chỉ hiện riêng khung Video?
+                  ⚡ Tự động khớp đoạn phim cho người vào sau
                 </h4>
                 <p>
-                  1. <strong>Tự động bóc tách:</strong> Khi bạn dán link từ web
-                  phim, Google Drive, Vimeo, Dailymotion, Bilibili... hệ thống
-                  sẽ tự động lọc bỏ trang web và chỉ lấy luồng video gốc (
-                  <code>.m3u8</code>) hoặc khung trình phát!
-                  <br />
-                  2. <strong>Nút &quot;Tìm Phim&quot;:</strong> Bấm nút{" "}
-                  <strong>Tìm Phim</strong> ở góc trên để tìm và phát trực tiếp
-                  video 100% full khung hình (kèm chọn tập và tự đồng bộ Tua/Dừng).
-                  <br />
-                  3. <strong>Nút &quot;Cắt Viền Web&quot;:</strong> Nếu gặp trang
-                  web khóa bảo mật không cho tách player, hãy bấm{" "}
-                  <strong>Cắt Viền Web</strong> ở thanh dưới để phóng to phần
-                  video và ẩn menu của web đó.
+                  Máy của Chủ phòng liên tục phát tín hiệu đồng bộ thời gian
+                  thực (mỗi 2 giây). Bất kỳ ai vào phòng muộn đều sẽ{" "}
+                  <strong>tự động nhảy tới đúng phút:giây đang chiếu</strong> và
+                  tự động phát tiếp, hoàn toàn không cần đếm ngược hay bấm cùng
+                  lúc!
                 </p>
               </div>
             </div>

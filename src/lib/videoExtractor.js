@@ -2,7 +2,6 @@
 
 import { parseMediaInput } from "./urlParser";
 
-// Known ad/tracker iframe patterns to ignore when extracting the video iframe from a webpage
 const IGNORED_IFRAME_PATTERNS = [
   /facebook\.com\/plugins\/(like|comments|page)/i,
   /disqus\.com/i,
@@ -18,7 +17,6 @@ const IGNORED_IFRAME_PATTERNS = [
   /javascript:/i,
 ];
 
-// Known video player keywords in iframe src
 const PLAYER_IFRAME_KEYWORDS = [
   "embed",
   "player",
@@ -46,14 +44,87 @@ const PLAYER_IFRAME_KEYWORDS = [
 ];
 
 /**
- * 1. Convert known webpage URLs directly into pure video player URLs
+ * Append start timestamp to iframe player URLs for late joiners
  */
-export function convertKnownPlatformToPlayerUrl(urlStr) {
+export function appendStartTimeToIframeUrl(urlStr, seconds) {
+  const sec = Math.floor(seconds || 0);
+  if (!urlStr || sec <= 3) return urlStr;
+
   try {
     const u = new URL(urlStr);
     const host = u.hostname.toLowerCase();
 
-    // Google Drive: https://drive.google.com/file/d/FILE_ID/view -> /preview
+    if (host.includes("vimeo.com")) {
+      u.hash = `t=${sec}s`;
+      return u.toString();
+    }
+    if (host.includes("dailymotion.com")) {
+      u.searchParams.set("start", String(sec));
+      u.searchParams.set("autoplay", "1");
+      return u.toString();
+    }
+    if (host.includes("bilibili.com")) {
+      u.searchParams.set("t", String(sec));
+      u.searchParams.set("autoplay", "1");
+      return u.toString();
+    }
+    if (host.includes("ok.ru")) {
+      u.searchParams.set("fromTime", String(sec));
+      u.searchParams.set("autoplay", "1");
+      return u.toString();
+    }
+    // Generic embed players often support ?t= or ?start= and autoplay=1
+    if (!u.searchParams.has("t") && !u.searchParams.has("start")) {
+      u.searchParams.set("autoplay", "1");
+      u.searchParams.set("t", String(sec));
+    }
+    return u.toString();
+  } catch {
+    return urlStr;
+  }
+}
+
+/**
+ * Check if a URL has a direct .m3u8 or .mp4 link embedded in its query parameters
+ * (e.g., https://player.phimapi.com/player/?url=https://.../index.m3u8)
+ */
+function extractStreamFromQueryParams(urlStr) {
+  try {
+    const u = new URL(urlStr);
+    for (const [, val] of u.searchParams.entries()) {
+      const decoded = decodeURIComponent(val || "");
+      if (/^https?:\/\/.+\.m3u8(\?.*)?$/i.test(decoded)) {
+        return {
+          type: "hls",
+          url: decoded,
+          sandbox: false,
+          extractedMethod: "Luồng video thuần (.m3u8 tự đồng bộ)",
+        };
+      }
+      if (/^https?:\/\/.+\.(mp4|webm)(\?.*)?$/i.test(decoded)) {
+        return {
+          type: "video",
+          url: decoded,
+          sandbox: false,
+          extractedMethod: "File video gốc (.mp4 tự đồng bộ)",
+        };
+      }
+    }
+  } catch {}
+  return null;
+}
+
+/**
+ * Convert known webpage URLs directly into pure video player URLs
+ */
+export function convertKnownPlatformToPlayerUrl(urlStr) {
+  const fromQuery = extractStreamFromQueryParams(urlStr);
+  if (fromQuery) return fromQuery;
+
+  try {
+    const u = new URL(urlStr);
+    const host = u.hostname.toLowerCase();
+
     if (host.includes("drive.google.com")) {
       const match = u.pathname.match(/\/file\/d\/([^/]+)/);
       if (match && match[1]) {
@@ -65,25 +136,23 @@ export function convertKnownPlatformToPlayerUrl(urlStr) {
       }
     }
 
-    // Vimeo: https://vimeo.com/12345678 -> https://player.vimeo.com/video/12345678
     if (host === "vimeo.com" || host === "www.vimeo.com") {
       const match = u.pathname.match(/^\/(\d+)/);
       if (match && match[1]) {
         return {
           type: "iframe",
-          url: `https://player.vimeo.com/video/${match[1]}`,
+          url: `https://player.vimeo.com/video/${match[1]}?autoplay=1`,
           sandbox: false,
         };
       }
     }
 
-    // Dailymotion: https://www.dailymotion.com/video/x8abcde or https://dai.ly/x8abcde
     if (host.includes("dailymotion.com")) {
       const match = u.pathname.match(/\/video\/([a-zA-Z0-9]+)/);
       if (match && match[1]) {
         return {
           type: "iframe",
-          url: `https://www.dailymotion.com/embed/video/${match[1]}`,
+          url: `https://www.dailymotion.com/embed/video/${match[1]}?autoplay=1`,
           sandbox: false,
         };
       }
@@ -93,48 +162,44 @@ export function convertKnownPlatformToPlayerUrl(urlStr) {
       if (id) {
         return {
           type: "iframe",
-          url: `https://www.dailymotion.com/embed/video/${id}`,
+          url: `https://www.dailymotion.com/embed/video/${id}?autoplay=1`,
           sandbox: false,
         };
       }
     }
 
-    // Ok.ru: https://ok.ru/video/123456789 -> https://ok.ru/videoembed/123456789
     if (host.includes("ok.ru")) {
       const match = u.pathname.match(/\/video\/(\d+)/);
       if (match && match[1]) {
         return {
           type: "iframe",
-          url: `https://ok.ru/videoembed/${match[1]}`,
+          url: `https://ok.ru/videoembed/${match[1]}?autoplay=1`,
           sandbox: false,
         };
       }
     }
 
-    // Bilibili: https://www.bilibili.com/video/BV1xx411c7mD
     if (host.includes("bilibili.com")) {
       const match = u.pathname.match(/\/video\/(BV[a-zA-Z0-9]+)/i);
       if (match && match[1]) {
         return {
           type: "iframe",
-          url: `https://player.bilibili.com/player.html?bvid=${match[1]}&high_quality=1&autoplay=0`,
+          url: `https://player.bilibili.com/player.html?bvid=${match[1]}&high_quality=1&autoplay=1`,
           sandbox: true,
         };
       }
     }
 
-    // Facebook video: https://www.facebook.com/.../videos/...
     if (host.includes("facebook.com") && u.pathname.includes("/videos/")) {
       return {
         type: "iframe",
         url: `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(
           urlStr
-        )}&show_text=false&autoplay=false`,
+        )}&show_text=false&autoplay=true`,
         sandbox: false,
       };
     }
 
-    // Streamtape / Doodstream / Filemoon / Mixdrop: convert /v/ or /d/ to /e/
     if (
       host.includes("streamtape") ||
       host.includes("dood") ||
@@ -153,21 +218,16 @@ export function convertKnownPlatformToPlayerUrl(urlStr) {
   return null;
 }
 
-/**
- * 2. Fetch HTML of a movie webpage via public CORS proxies and extract the pure video (.m3u8, .mp4, or inner player iframe)
- */
 async function fetchHtmlViaProxy(targetUrl) {
   const proxies = [
-    (url) =>
-      `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
-    (url) =>
-      `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+    (url) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+    (url) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
   ];
 
   for (const buildProxyUrl of proxies) {
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 6500);
+      const timeout = setTimeout(() => controller.abort(), 6000);
       const res = await fetch(buildProxyUrl(targetUrl), {
         signal: controller.signal,
       });
@@ -177,7 +237,11 @@ async function fetchHtmlViaProxy(targetUrl) {
       const contentType = res.headers.get("content-type") || "";
       if (contentType.includes("application/json")) {
         const data = await res.json();
-        if (data && typeof data.contents === "string" && data.contents.length > 100) {
+        if (
+          data &&
+          typeof data.contents === "string" &&
+          data.contents.length > 100
+        ) {
           return data.contents;
         }
       } else {
@@ -191,31 +255,26 @@ async function fetchHtmlViaProxy(targetUrl) {
   return null;
 }
 
-/**
- * Scan webpage HTML for direct .m3u8 streams, .mp4 files, or inner video player iframes
- */
 function extractVideoFromHtml(html, baseUrl) {
   if (!html) return null;
 
-  // Unescape common JSON slashes like https:\/\/domain.com\/...\/*.m3u8
   const unescaped = html.replace(/\\\//g, "/");
 
-  // A. Look for direct .m3u8 stream URLs in page HTML or embedded scripts
+  // A. Direct .m3u8 stream URLs
   const m3u8Regex = /(https?:\/\/[^\s"'<>\\]+\.m3u8(?:\?[^\s"'<>\\]*)?)/gi;
   const m3u8Matches = [...unescaped.matchAll(m3u8Regex)].map((m) => m[1]);
   if (m3u8Matches.length > 0) {
-    // Prefer master/index m3u8 or first valid m3u8
     const bestM3u8 =
       m3u8Matches.find((u) => !u.includes("trailer")) || m3u8Matches[0];
     return {
       type: "hls",
       url: bestM3u8,
       sandbox: false,
-      extractedMethod: "Luồng video gốc (.m3u8)",
+      extractedMethod: "Luồng video gốc (.m3u8 tự đồng bộ)",
     };
   }
 
-  // B. Look for direct .mp4 video URLs in player configs
+  // B. Direct .mp4 video URLs
   const mp4Regex = /(https?:\/\/[^\s"'<>\\]+\.mp4(?:\?[^\s"'<>\\]*)?)/gi;
   const mp4Matches = [...unescaped.matchAll(mp4Regex)]
     .map((m) => m[1])
@@ -225,24 +284,27 @@ function extractVideoFromHtml(html, baseUrl) {
       type: "video",
       url: mp4Matches[0],
       sandbox: false,
-      extractedMethod: "File video gốc (.mp4)",
+      extractedMethod: "File video gốc (.mp4 tự đồng bộ)",
     };
   }
 
-  // C. Look for link_embed in embedded JSON (common on Next.js / Nuxt movie sites)
+  // C. Look for link_embed in embedded JSON
   const embedJsonMatch = unescaped.match(
     /"(?:link_embed|embed_url|embedUrl|iframe_url|player_url)"\s*:\s*"(https?:\/\/[^"]+)"/i
   );
   if (embedJsonMatch && embedJsonMatch[1]) {
+    const embedUrl = embedJsonMatch[1];
+    const queryStream = extractStreamFromQueryParams(embedUrl);
+    if (queryStream) return queryStream;
     return {
       type: "iframe",
-      url: embedJsonMatch[1],
+      url: embedUrl,
       sandbox: true,
       extractedMethod: "Trình phát nhúng (Player)",
     };
   }
 
-  // D. Parse all <iframe src="..."> tags and find the actual video player iframe
+  // D. Inner <iframe src="...">
   const iframeRegex = /<iframe[^>]+(?:src|data-src)=["']([^"']+)["'][^>]*>/gi;
   const candidates = [];
   let match;
@@ -253,6 +315,9 @@ function extractVideoFromHtml(html, baseUrl) {
 
     try {
       const resolved = new URL(src, baseUrl).href;
+      const queryStream = extractStreamFromQueryParams(resolved);
+      if (queryStream) return queryStream;
+
       let score = 0;
       const lower = resolved.toLowerCase();
       for (const kw of PLAYER_IFRAME_KEYWORDS) {
@@ -276,14 +341,9 @@ function extractVideoFromHtml(html, baseUrl) {
   return null;
 }
 
-/**
- * 3. Extract movie slug and Episode number from a Vietnamese movie URL
- *    and query KKPhim (phimapi.com) / OPhim (ophim1.com) for the pure .m3u8 stream!
- */
 function extractMovieSlugAndEpisode(urlStr) {
   try {
     const u = new URL(urlStr);
-    // Clean path segments
     const segments = u.pathname
       .split("/")
       .map((s) => s.trim())
@@ -292,7 +352,6 @@ function extractMovieSlugAndEpisode(urlStr) {
 
     if (segments.length === 0) return null;
 
-    // Look for episode number in URL (e.g., tap-1, tap-02, ep-3)
     let episodeNum = 1;
     for (const seg of segments) {
       const epMatch = seg.match(/(?:tap|ep|episode)-?(\d+)/i);
@@ -301,7 +360,6 @@ function extractMovieSlugAndEpisode(urlStr) {
       }
     }
 
-    // Find the movie slug segment (ignore 'phim', 'xem-phim', 'watch', 'movie', 'info')
     const ignoreWords = new Set([
       "phim",
       "xem-phim",
@@ -316,13 +374,13 @@ function extractMovieSlugAndEpisode(urlStr) {
     ]);
 
     const meaningful = segments.filter(
-      (s) => !ignoreWords.has(s.toLowerCase()) && !/^(?:tap|ep)-?\d+$/i.test(s)
+      (s) =>
+        !ignoreWords.has(s.toLowerCase()) && !/^(?:tap|ep)-?\d+$/i.test(s)
     );
 
     if (meaningful.length === 0) return null;
 
     let rawSlug = meaningful[meaningful.length - 1];
-    // Strip trailing "-tap-1..." or random short ID suffixes if needed
     rawSlug = rawSlug.replace(/-(?:tap|ep)-\d+.*$/i, "");
 
     return { slug: rawSlug, episodeNum };
@@ -331,10 +389,15 @@ function extractMovieSlugAndEpisode(urlStr) {
   }
 }
 
-export async function lookupMovieStreamBySlugOrKeyword(slugOrQuery, episodeNum = 1) {
+export async function lookupMovieStreamBySlugOrKeyword(
+  slugOrQuery,
+  episodeNum = 1
+) {
   // 1. Try direct slug on KKPhim API (phimapi.com/phim/{slug})
   try {
-    const res = await fetch(`https://phimapi.com/phim/${encodeURIComponent(slugOrQuery)}`);
+    const res = await fetch(
+      `https://phimapi.com/phim/${encodeURIComponent(slugOrQuery)}`
+    );
     if (res.ok) {
       const data = await res.json();
       const parsed = pickEpisodeFromApiData(data, episodeNum);
@@ -344,7 +407,9 @@ export async function lookupMovieStreamBySlugOrKeyword(slugOrQuery, episodeNum =
 
   // 2. Try direct slug on OPhim API (ophim1.com/phim/{slug})
   try {
-    const res = await fetch(`https://ophim1.com/phim/${encodeURIComponent(slugOrQuery)}`);
+    const res = await fetch(
+      `https://ophim1.com/phim/${encodeURIComponent(slugOrQuery)}`
+    );
     if (res.ok) {
       const data = await res.json();
       const parsed = pickEpisodeFromApiData(data, episodeNum);
@@ -357,13 +422,17 @@ export async function lookupMovieStreamBySlugOrKeyword(slugOrQuery, episodeNum =
   if (keyword.length >= 2) {
     try {
       const searchRes = await fetch(
-        `https://phimapi.com/v1/api/tim-kiem?keyword=${encodeURIComponent(keyword)}&limit=5`
+        `https://phimapi.com/v1/api/tim-kiem?keyword=${encodeURIComponent(
+          keyword
+        )}&limit=5`
       );
       if (searchRes.ok) {
         const searchData = await searchRes.json();
         const items = searchData?.data?.items || [];
         if (items.length > 0 && items[0].slug) {
-          const detailRes = await fetch(`https://phimapi.com/phim/${items[0].slug}`);
+          const detailRes = await fetch(
+            `https://phimapi.com/phim/${items[0].slug}`
+          );
           if (detailRes.ok) {
             const detailData = await detailRes.json();
             const parsed = pickEpisodeFromApiData(detailData, episodeNum);
@@ -380,13 +449,16 @@ export async function lookupMovieStreamBySlugOrKeyword(slugOrQuery, episodeNum =
 function pickEpisodeFromApiData(data, episodeNum = 1) {
   const episodesGroups = data?.episodes;
   const movieInfo = data?.movie;
-  if (!Array.isArray(episodesGroups) || episodesGroups.length === 0) return null;
+  if (!Array.isArray(episodesGroups) || episodesGroups.length === 0)
+    return null;
 
   const serverData = episodesGroups[0]?.server_data;
   if (!Array.isArray(serverData) || serverData.length === 0) return null;
 
-  // Find matching episode or fallback to first episode
-  const targetIndex = Math.max(0, Math.min(serverData.length - 1, episodeNum - 1));
+  const targetIndex = Math.max(
+    0,
+    Math.min(serverData.length - 1, episodeNum - 1)
+  );
   const matchedEp =
     serverData.find((ep) => {
       const m = (ep.slug || ep.name || "").match(/(\d+)/);
@@ -415,6 +487,15 @@ function pickEpisodeFromApiData(data, episodeNum = 1) {
   }
 
   if (matchedEp.link_embed) {
+    const queryStream = extractStreamFromQueryParams(matchedEp.link_embed);
+    if (queryStream) {
+      return {
+        ...queryStream,
+        movieTitle: `${movieInfo?.name || "Phim"} — ${matchedEp.name || ""}`,
+        episodes: allEpisodes,
+        currentEpisodeIndex: serverData.indexOf(matchedEp),
+      };
+    }
     return {
       type: "iframe",
       url: matchedEp.link_embed,
@@ -429,9 +510,6 @@ function pickEpisodeFromApiData(data, episodeNum = 1) {
   return null;
 }
 
-/**
- * Search movies directly by keyword (for the built-in Movie Search tool)
- */
 export async function searchMoviesByKeyword(keyword) {
   if (!keyword || !keyword.trim()) return [];
   try {
@@ -461,15 +539,10 @@ export async function searchMoviesByKeyword(keyword) {
   }
 }
 
-/**
- * Master function: Given any raw user input (URL, <iframe...>, or movie webpage link),
- * resolves to ONLY the pure video stream / video player!
- */
 export async function resolvePureVideoMedia(rawInput) {
   if (!rawInput || !rawInput.trim()) return null;
   const trimmed = rawInput.trim();
 
-  // If the user typed a movie name instead of a URL (e.g. "Đảo Hải Tặc" or "Squid Game tap 2")
   const looksLikeUrlOrIframe =
     /^https?:\/\//i.test(trimmed) ||
     /<iframe/i.test(trimmed) ||
@@ -484,7 +557,10 @@ export async function resolvePureVideoMedia(rawInput) {
       epNum = parseInt(epMatch[1], 10) || 1;
     }
     const cleanKeyword = trimmed.replace(/(?:tập|tap|ep)\s*\d+/i, "").trim();
-    const byKeyword = await lookupMovieStreamBySlugOrKeyword(cleanKeyword, epNum);
+    const byKeyword = await lookupMovieStreamBySlugOrKeyword(
+      cleanKeyword,
+      epNum
+    );
     if (byKeyword) {
       return {
         rawInput: trimmed,
@@ -496,17 +572,43 @@ export async function resolvePureVideoMedia(rawInput) {
   const basic = parseMediaInput(trimmed);
   if (!basic) return null;
 
-  // If it's already YouTube, .m3u8 (HLS), or .mp4, return immediately
-  if (basic.type === "youtube" || basic.type === "hls" || basic.type === "video") {
+  if (
+    basic.type === "youtube" ||
+    basic.type === "hls" ||
+    basic.type === "video"
+  ) {
     return basic;
   }
 
-  // If the user explicitly pasted an <iframe src="..."> tag, it's already an embed player
+  // Check if URL has ?url=...m3u8
+  const queryStream = extractStreamFromQueryParams(basic.url);
+  if (queryStream) {
+    return {
+      ...basic,
+      ...queryStream,
+    };
+  }
+
   if (/<iframe[^>]+src=/i.test(rawInput)) {
     return basic;
   }
 
-  // Step 1: Check known platforms (Google Drive, Vimeo, Dailymotion, Ok.ru, Bilibili, Facebook, Streamtape...)
+  // Step 1: Try looking up movie slug first on Vietnamese movie APIs so we get a 100% syncable .m3u8 stream!
+  const slugInfo = extractMovieSlugAndEpisode(basic.url);
+  if (slugInfo && slugInfo.slug && slugInfo.slug.length >= 3) {
+    const apiStream = await lookupMovieStreamBySlugOrKeyword(
+      slugInfo.slug,
+      slugInfo.episodeNum
+    );
+    if (apiStream && apiStream.type === "hls") {
+      return {
+        ...basic,
+        ...apiStream,
+      };
+    }
+  }
+
+  // Step 2: Check known platforms (Google Drive, Vimeo, Dailymotion, Ok.ru, Bilibili...)
   const platformPlayer = convertKnownPlatformToPlayerUrl(basic.url);
   if (platformPlayer) {
     return {
@@ -515,16 +617,27 @@ export async function resolvePureVideoMedia(rawInput) {
     };
   }
 
-  // Step 2: Check if the URL itself already looks like a pure embed player URL (e.g. /embed/, /player/, player.*)
-  if (/(\/embed\/|\/player\/|player\.|embed\.|videoembed)/i.test(basic.url)) {
-    return basic;
-  }
-
-  // Step 3: Try scraping the target webpage HTML to extract its .m3u8, .mp4, or inner player <iframe>
+  // Step 3: Scrape target webpage HTML for .m3u8, .mp4, or inner player <iframe>
   const html = await fetchHtmlViaProxy(basic.url);
   if (html) {
     const extracted = extractVideoFromHtml(html, basic.url);
     if (extracted) {
+      // If extracted is an iframe, also try once to see if that iframe page contains a raw .m3u8!
+      if (extracted.type === "iframe" && extracted.url) {
+        const innerHtml = await fetchHtmlViaProxy(extracted.url);
+        if (innerHtml) {
+          const innerExtracted = extractVideoFromHtml(innerHtml, extracted.url);
+          if (
+            innerExtracted &&
+            (innerExtracted.type === "hls" || innerExtracted.type === "video")
+          ) {
+            return {
+              ...basic,
+              ...innerExtracted,
+            };
+          }
+        }
+      }
       return {
         ...basic,
         ...extracted,
@@ -532,22 +645,5 @@ export async function resolvePureVideoMedia(rawInput) {
     }
   }
 
-  // Step 4: If the webpage blocked proxy scraping (or rendered via client JS), extract its movie slug + episode
-  // and fetch the pure .m3u8 video stream from public Movie API!
-  const slugInfo = extractMovieSlugAndEpisode(basic.url);
-  if (slugInfo && slugInfo.slug) {
-    const apiStream = await lookupMovieStreamBySlugOrKeyword(
-      slugInfo.slug,
-      slugInfo.episodeNum
-    );
-    if (apiStream) {
-      return {
-        ...basic,
-        ...apiStream,
-      };
-    }
-  }
-
-  // Fallback: return basic iframe with Focus/Crop mode available
   return basic;
 }
