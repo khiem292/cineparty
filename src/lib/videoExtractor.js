@@ -2,30 +2,6 @@
 
 import { parseMediaInput } from "./urlParser";
 
-// Domains/patterns that are verified PURE video players (never full websites)
-const PURE_PLAYER_PATTERNS = [
-  /player\.phimapi\.com/i,
-  /opstream/i,
-  /goatembed/i,
-  /player\.vimeo\.com/i,
-  /dailymotion\.com\/embed/i,
-  /drive\.google\.com\/file\/d\/[^/]+\/preview/i,
-  /ok\.ru\/videoembed/i,
-  /player\.bilibili\.com/i,
-  /facebook\.com\/plugins\/video\.php/i,
-  /youtube\.com\/embed/i,
-  /vidsrc/i,
-  /filemoon\.[^/]+\/e\//i,
-  /streamtape\.[^/]+\/e\//i,
-  /dood[^/]*\.[^/]+\/e\//i,
-  /mixdrop\.[^/]+\/e\//i,
-  /hydrax/i,
-  /play\.ophim/i,
-  /embed\./i,
-  /\/embed\//i,
-  /\/player\//i,
-];
-
 const IGNORED_IFRAME_PATTERNS = [
   /facebook\.com\/plugins\/(like|comments|page)/i,
   /disqus\.com/i,
@@ -39,12 +15,40 @@ const IGNORED_IFRAME_PATTERNS = [
   /propellerads/i,
   /about:blank/i,
   /javascript:/i,
+  /twitter\.com\/widgets/i,
+  /accounts\.google\.com/i,
 ];
 
-export function isPurePlayerUrl(urlStr) {
-  if (!urlStr) return false;
-  return PURE_PLAYER_PATTERNS.some((pat) => pat.test(urlStr));
-}
+const PLAYER_IFRAME_KEYWORDS = [
+  "embed",
+  "player",
+  "video",
+  "stream",
+  "play",
+  "cloud",
+  "hydrax",
+  "ok.ru",
+  "vimeo",
+  "dailymotion",
+  "youtube",
+  "drive.google",
+  "phim",
+  "opstream",
+  "goat",
+  "vidsrc",
+  "filemoon",
+  "dood",
+  "streamtape",
+  "mixdrop",
+  "hls",
+  "m3u8",
+  "vip",
+  "peertube",
+  "rumble",
+  "odysee",
+  "twitch",
+  "tiktok",
+];
 
 export function appendStartTimeToIframeUrl(urlStr, seconds) {
   const sec = Math.floor(seconds || 0);
@@ -89,7 +93,7 @@ function extractStreamFromQueryParams(urlStr) {
           type: "hls",
           url: decoded,
           sandbox: false,
-          extractedMethod: "Luồng video thuần (.m3u8)",
+          extractedMethod: "Luồng video gốc (.m3u8)",
         };
       }
       if (/^https?:\/\/.+\.(mp4|webm)(\?.*)?$/i.test(decoded)) {
@@ -113,34 +117,40 @@ export function convertKnownPlatformToPlayerUrl(urlStr) {
     const u = new URL(urlStr);
     const host = u.hostname.toLowerCase();
 
+    // Google Drive
     if (host.includes("drive.google.com")) {
       const match = u.pathname.match(/\/file\/d\/([^/]+)/);
       if (match && match[1]) {
         return {
           type: "iframe",
           url: `https://drive.google.com/file/d/${match[1]}/preview`,
+          isPurePlayer: true,
           sandbox: false,
         };
       }
     }
 
+    // Vimeo
     if (host === "vimeo.com" || host === "www.vimeo.com") {
       const match = u.pathname.match(/^\/(\d+)/);
       if (match && match[1]) {
         return {
           type: "iframe",
           url: `https://player.vimeo.com/video/${match[1]}?autoplay=1`,
+          isPurePlayer: true,
           sandbox: false,
         };
       }
     }
 
+    // Dailymotion
     if (host.includes("dailymotion.com")) {
       const match = u.pathname.match(/\/video\/([a-zA-Z0-9]+)/);
       if (match && match[1]) {
         return {
           type: "iframe",
           url: `https://www.dailymotion.com/embed/video/${match[1]}?autoplay=1`,
+          isPurePlayer: true,
           sandbox: false,
         };
       }
@@ -151,53 +161,117 @@ export function convertKnownPlatformToPlayerUrl(urlStr) {
         return {
           type: "iframe",
           url: `https://www.dailymotion.com/embed/video/${id}?autoplay=1`,
+          isPurePlayer: true,
           sandbox: false,
         };
       }
     }
 
+    // Ok.ru
     if (host.includes("ok.ru")) {
       const match = u.pathname.match(/\/video\/(\d+)/);
       if (match && match[1]) {
         return {
           type: "iframe",
           url: `https://ok.ru/videoembed/${match[1]}?autoplay=1`,
+          isPurePlayer: true,
           sandbox: false,
         };
       }
     }
 
+    // Bilibili
     if (host.includes("bilibili.com")) {
       const match = u.pathname.match(/\/video\/(BV[a-zA-Z0-9]+)/i);
       if (match && match[1]) {
         return {
           type: "iframe",
           url: `https://player.bilibili.com/player.html?bvid=${match[1]}&high_quality=1&autoplay=1`,
+          isPurePlayer: true,
+          sandbox: true,
+        };
+      }
+    }
+    if (host.includes("bilibili.tv")) {
+      const match = u.pathname.match(/\/(?:video|play)\/(\d+)/i);
+      if (match && match[1]) {
+        return {
+          type: "iframe",
+          url: `https://www.bilibili.tv/en/embed/${match[1]}`,
+          isPurePlayer: true,
           sandbox: true,
         };
       }
     }
 
-    if (host.includes("facebook.com") && u.pathname.includes("/videos/")) {
+    // TikTok video: https://www.tiktok.com/@user/video/123456789
+    if (host.includes("tiktok.com")) {
+      const match = u.pathname.match(/\/video\/(\d+)/);
+      if (match && match[1]) {
+        return {
+          type: "iframe",
+          url: `https://www.tiktok.com/embed/v2/${match[1]}`,
+          isPurePlayer: true,
+          sandbox: false,
+        };
+      }
+    }
+
+    // Twitch channel or video
+    if (host.includes("twitch.tv")) {
+      const parentHost =
+        typeof window !== "undefined" ? window.location.hostname : "localhost";
+      const vidMatch = u.pathname.match(/\/videos\/(\d+)/);
+      if (vidMatch && vidMatch[1]) {
+        return {
+          type: "iframe",
+          url: `https://player.twitch.tv/?video=${vidMatch[1]}&parent=${parentHost}&autoplay=true`,
+          isPurePlayer: true,
+          sandbox: false,
+        };
+      }
+      const chan = u.pathname.slice(1).split("/")[0];
+      if (chan) {
+        return {
+          type: "iframe",
+          url: `https://player.twitch.tv/?channel=${chan}&parent=${parentHost}&autoplay=true`,
+          isPurePlayer: true,
+          sandbox: false,
+        };
+      }
+    }
+
+    // Facebook video
+    if (
+      (host.includes("facebook.com") || host.includes("fb.watch")) &&
+      (u.pathname.includes("/videos/") ||
+        u.pathname.includes("/watch") ||
+        u.pathname.includes("/reel/"))
+    ) {
       return {
         type: "iframe",
         url: `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(
           urlStr
         )}&show_text=false&autoplay=true`,
+        isPurePlayer: true,
         sandbox: false,
       };
     }
 
+    // Streamtape / Doodstream / Filemoon / Mixdrop / Lulustream / Voe
     if (
       host.includes("streamtape") ||
       host.includes("dood") ||
       host.includes("filemoon") ||
-      host.includes("mixdrop")
+      host.includes("mixdrop") ||
+      host.includes("lulustream") ||
+      host.includes("voe.sx")
     ) {
       const convertedPath = u.pathname.replace(/^\/(v|d|f)\//, "/e/");
       return {
         type: "iframe",
         url: `${u.origin}${convertedPath}${u.search}`,
+        isPurePlayer: true,
         sandbox: true,
       };
     }
@@ -206,47 +280,295 @@ export function convertKnownPlatformToPlayerUrl(urlStr) {
   return null;
 }
 
+/**
+ * Race multiple CORS proxies in parallel so webpage HTML fetching is fast and reliable
+ */
 async function fetchHtmlViaProxy(targetUrl) {
-  const proxies = [
-    (url) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
-    (url) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+  const proxyBuilders = [
+    async () => {
+      const r = await fetch(
+        `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`
+      );
+      if (!r.ok) throw new Error("Failed");
+      const d = await r.json();
+      if (!d?.contents || d.contents.length < 100) throw new Error("Empty");
+      return d.contents;
+    },
+    async () => {
+      const r = await fetch(
+        `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(
+          targetUrl
+        )}`
+      );
+      if (!r.ok) throw new Error("Failed");
+      const text = await r.text();
+      if (!text || text.length < 100) throw new Error("Empty");
+      return text;
+    },
   ];
 
-  for (const buildProxyUrl of proxies) {
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5000);
-      const res = await fetch(buildProxyUrl(targetUrl), {
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
-      if (!res.ok) continue;
-
-      const contentType = res.headers.get("content-type") || "";
-      if (contentType.includes("application/json")) {
-        const data = await res.json();
-        if (
-          data &&
-          typeof data.contents === "string" &&
-          data.contents.length > 100
-        ) {
-          return data.contents;
-        }
-      } else {
-        const text = await res.text();
-        if (text && text.length > 100) {
-          return text;
-        }
-      }
-    } catch {}
+  try {
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("Timeout")), 5500)
+    );
+    return await Promise.race([
+      Promise.any(proxyBuilders.map((fn) => fn())),
+      timeoutPromise,
+    ]);
+  } catch {
+    return null;
   }
-  return null;
 }
 
 /**
- * Extract clean movie title candidates from webpage <title> or og:title
- * e.g. "Phim Gả Kim Thoa / Gả trâm vàng Tập 1 Vietsub - Rophim" -> ["Gả Kim Thoa", "Gả trâm vàng"]
+ * Build an isolated HTML document (`srcdoc`) from a webpage's HTML that hides ALL webpage UI
+ * (headers, menus, footers, comments, ads) and forces ONLY the video player element to fill 100% of the box!
  */
+export function buildIsolatedVideoSrcDoc(html, originalUrl) {
+  if (!html) return null;
+  let originUrl = originalUrl;
+  try {
+    const u = new URL(originalUrl);
+    originUrl = `${u.origin}${u.pathname.replace(/\/[^/]*$/, "/")}`;
+  } catch {}
+
+  const isolatorInjection = `
+<base href="${originUrl}" />
+<style id="cineparty-video-isolator-style">
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    overflow: hidden !important;
+    background: #000 !important;
+  }
+  header, nav, footer, aside,
+  .header, .navbar, .nav, .footer, .sidebar, .comments, .comment-section,
+  .related-movies, .movie-info, .breadcrumb, .ads, .banner,
+  #header, #navbar, #footer, #sidebar, #comments {
+    display: none !important;
+  }
+  .cineparty-isolated-target {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    max-width: 100vw !important;
+    max-height: 100vh !important;
+    z-index: 2147483647 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #000 !important;
+    border: none !important;
+    transform: none !important;
+  }
+</style>
+<script>
+(function() {
+  const SELECTORS = [
+    'video',
+    'iframe[allowfullscreen]',
+    'iframe[src*="embed"]',
+    'iframe[src*="player"]',
+    'iframe[src*="stream"]',
+    '.jwplayer',
+    '.artplayer-app',
+    '.plyr',
+    '.video-js',
+    '.dplayer',
+    '#player',
+    '#video-player',
+    '#watch-player',
+    '#media-player',
+    '.player-wrapper',
+    '.video-container',
+    '.watch-player',
+    '[id*="player"]',
+    '[class*="player-container"]'
+  ];
+
+  function isolatePlayer() {
+    for (const sel of SELECTORS) {
+      const els = document.querySelectorAll(sel);
+      for (const el of els) {
+        const rect = el.getBoundingClientRect();
+        if (el.tagName === 'VIDEO' || el.tagName === 'IFRAME' || (rect.width >= 200 && rect.height >= 120)) {
+          if (!el.classList.contains('cineparty-isolated-target')) {
+            el.classList.add('cineparty-isolated-target');
+          }
+          // Ensure all parent ancestors are visible and unclipped
+          let p = el.parentElement;
+          while (p && p !== document.body && p !== document.documentElement) {
+            p.style.setProperty('display', 'block', 'important');
+            p.style.setProperty('visibility', 'visible', 'important');
+            p.style.setProperty('opacity', '1', 'important');
+            p.style.setProperty('overflow', 'visible', 'important');
+            p.style.setProperty('transform', 'none', 'important');
+            p = p.parentElement;
+          }
+          return;
+        }
+      }
+    }
+  }
+
+  setInterval(isolatePlayer, 350);
+  window.addEventListener('DOMContentLoaded', isolatePlayer);
+  window.addEventListener('load', isolatePlayer);
+})();
+</script>
+`;
+
+  if (/<head[^>]*>/i.test(html)) {
+    return html.replace(/<head[^>]*>/i, (match) => `${match}${isolatorInjection}`);
+  }
+  return `${isolatorInjection}${html}`;
+}
+
+/**
+ * Scan webpage HTML for any direct video stream (.m3u8, .mp4, <video>, og:video) or inner player <iframe>
+ */
+function extractVideoFromHtml(html, baseUrl) {
+  if (!html) return null;
+
+  const unescaped = html.replace(/\\\//g, "/");
+
+  // 1. Check OpenGraph / Twitter Player meta tags (<meta property="og:video" ...>)
+  const ogVideoMatch = html.match(
+    /<meta[^>]+(?:property|name)=["'](?:og:video|og:video:url|og:video:secure_url|twitter:player|twitter:player:stream)["'][^>]+content=["']([^"']+)["']/i
+  );
+  if (ogVideoMatch && ogVideoMatch[1]) {
+    try {
+      const resolvedOg = new URL(ogVideoMatch[1].trim(), baseUrl).href;
+      if (/\.m3u8(\?.*)?$/i.test(resolvedOg)) {
+        return {
+          type: "hls",
+          url: resolvedOg,
+          sandbox: false,
+          extractedMethod: "Luồng video gốc (.m3u8)",
+        };
+      }
+      if (/\.(mp4|webm)(\?.*)?$/i.test(resolvedOg)) {
+        return {
+          type: "video",
+          url: resolvedOg,
+          sandbox: false,
+          extractedMethod: "File video gốc (.mp4)",
+        };
+      }
+      return {
+        type: "iframe",
+        url: resolvedOg,
+        isPurePlayer: true,
+        sandbox: true,
+        extractedMethod: "Trình phát gốc (Meta Player)",
+      };
+    } catch {}
+  }
+
+  // 2. Direct .m3u8 stream URLs in HTML or scripts
+  const m3u8Regex = /(https?:\/\/[^\s"'<>\\]+\.m3u8(?:\?[^\s"'<>\\]*)?)/gi;
+  const m3u8Matches = [...unescaped.matchAll(m3u8Regex)].map((m) => m[1]);
+  if (m3u8Matches.length > 0) {
+    const bestM3u8 =
+      m3u8Matches.find((u) => !u.includes("trailer")) || m3u8Matches[0];
+    return {
+      type: "hls",
+      url: bestM3u8,
+      sandbox: false,
+      extractedMethod: "Luồng video gốc (.m3u8)",
+    };
+  }
+
+  // 3. Direct <video src="..."> or <source src="..."> tags in HTML
+  const videoTagMatch = html.match(
+    /<(?:video|source)[^>]+src=["']([^"']+\.(?:mp4|webm|m3u8)[^"']*)["']/i
+  );
+  if (videoTagMatch && videoTagMatch[1]) {
+    try {
+      const resolvedVid = new URL(videoTagMatch[1].trim(), baseUrl).href;
+      return {
+        type: resolvedVid.includes(".m3u8") ? "hls" : "video",
+        url: resolvedVid,
+        sandbox: false,
+        extractedMethod: "Thẻ <video> gốc trên trang",
+      };
+    } catch {}
+  }
+
+  // 4. Direct .mp4 video URLs in scripts/configs
+  const mp4Regex = /(https?:\/\/[^\s"'<>\\]+\.mp4(?:\?[^\s"'<>\\]*)?)/gi;
+  const mp4Matches = [...unescaped.matchAll(mp4Regex)]
+    .map((m) => m[1])
+    .filter((u) => !u.includes("ad") && !u.includes("banner"));
+  if (mp4Matches.length > 0) {
+    return {
+      type: "video",
+      url: mp4Matches[0],
+      sandbox: false,
+      extractedMethod: "File video gốc (.mp4)",
+    };
+  }
+
+  // 5. Look for player embed URLs in JSON configs (link_embed, embed_url, iframe_url, player_url, embedUrl)
+  const embedJsonMatch = unescaped.match(
+    /"(?:link_embed|embed_url|embedUrl|iframe_url|player_url|video_url|stream_url)"\s*:\s*"(https?:\/\/[^"]+)"/i
+  );
+  if (embedJsonMatch && embedJsonMatch[1]) {
+    const embedUrl = embedJsonMatch[1];
+    const queryStream = extractStreamFromQueryParams(embedUrl);
+    if (queryStream) return queryStream;
+    return {
+      type: "iframe",
+      url: embedUrl,
+      isPurePlayer: true,
+      sandbox: true,
+      extractedMethod: "Khung trình phát (Player)",
+    };
+  }
+
+  // 6. Any <iframe src="..."> inside the webpage (excluding ads/comments)
+  const iframeRegex = /<iframe[^>]+(?:src|data-src|data-lazy-src)=["']([^"']+)["'][^>]*>/gi;
+  const candidates = [];
+  let match;
+  while ((match = iframeRegex.exec(html)) !== null) {
+    let src = match[1].trim();
+    if (!src) continue;
+    if (IGNORED_IFRAME_PATTERNS.some((pat) => pat.test(src))) continue;
+
+    try {
+      const resolved = new URL(src, baseUrl).href;
+      const queryStream = extractStreamFromQueryParams(resolved);
+      if (queryStream) return queryStream;
+
+      let score = 1;
+      const lower = resolved.toLowerCase();
+      for (const kw of PLAYER_IFRAME_KEYWORDS) {
+        if (lower.includes(kw)) score += 3;
+      }
+      if (match[0].toLowerCase().includes("allowfullscreen")) score += 5;
+      candidates.push({ url: resolved, score });
+    } catch {}
+  }
+
+  if (candidates.length > 0) {
+    candidates.sort((a, b) => b.score - a.score);
+    return {
+      type: "iframe",
+      url: candidates[0].url,
+      isPurePlayer: true,
+      sandbox: true,
+      extractedMethod: "Khung trình phát video (Player Iframe)",
+    };
+  }
+
+  return null;
+}
+
 function extractTitleCandidatesFromHtml(html) {
   if (!html) return [];
   const rawTitles = [];
@@ -261,13 +583,11 @@ function extractTitleCandidatesFromHtml(html) {
 
   const candidates = [];
   for (const raw of rawTitles) {
-    // Decode basic HTML entities
     const decoded = raw
       .replace(/&amp;/g, "&")
       .replace(/&#039;/g, "'")
       .replace(/&quot;/g, '"');
 
-    // Split by |, -, /, –
     const parts = decoded.split(/\s*(?:\||\/|-|–|—)\s*/);
     for (let part of parts) {
       part = part
@@ -295,92 +615,11 @@ function extractTitleCandidatesFromHtml(html) {
   return candidates;
 }
 
-function extractVideoFromHtml(html, baseUrl) {
-  if (!html) return null;
-
-  const unescaped = html.replace(/\\\//g, "/");
-
-  // A. Direct .m3u8 stream URLs
-  const m3u8Regex = /(https?:\/\/[^\s"'<>\\]+\.m3u8(?:\?[^\s"'<>\\]*)?)/gi;
-  const m3u8Matches = [...unescaped.matchAll(m3u8Regex)].map((m) => m[1]);
-  if (m3u8Matches.length > 0) {
-    const bestM3u8 =
-      m3u8Matches.find((u) => !u.includes("trailer")) || m3u8Matches[0];
-    return {
-      type: "hls",
-      url: bestM3u8,
-      sandbox: false,
-      extractedMethod: "Luồng video gốc (.m3u8)",
-    };
-  }
-
-  // B. Direct .mp4 video URLs
-  const mp4Regex = /(https?:\/\/[^\s"'<>\\]+\.mp4(?:\?[^\s"'<>\\]*)?)/gi;
-  const mp4Matches = [...unescaped.matchAll(mp4Regex)]
-    .map((m) => m[1])
-    .filter((u) => !u.includes("ad") && !u.includes("banner"));
-  if (mp4Matches.length > 0) {
-    return {
-      type: "video",
-      url: mp4Matches[0],
-      sandbox: false,
-      extractedMethod: "File video gốc (.mp4)",
-    };
-  }
-
-  // C. Look for link_embed in embedded JSON
-  const embedJsonMatch = unescaped.match(
-    /"(?:link_embed|embed_url|embedUrl|iframe_url|player_url)"\s*:\s*"(https?:\/\/[^"]+)"/i
-  );
-  if (embedJsonMatch && embedJsonMatch[1]) {
-    const embedUrl = embedJsonMatch[1];
-    const queryStream = extractStreamFromQueryParams(embedUrl);
-    if (queryStream) return queryStream;
-    return {
-      type: "iframe",
-      url: embedUrl,
-      sandbox: true,
-      extractedMethod: "Khung trình phát (Player)",
-    };
-  }
-
-  // D. Inner <iframe src="..."> (ONLY accept verified player iframes)
-  const iframeRegex = /<iframe[^>]+(?:src|data-src)=["']([^"']+)["'][^>]*>/gi;
-  let match;
-  while ((match = iframeRegex.exec(html)) !== null) {
-    let src = match[1].trim();
-    if (!src) continue;
-    if (IGNORED_IFRAME_PATTERNS.some((pat) => pat.test(src))) continue;
-
-    try {
-      const resolved = new URL(src, baseUrl).href;
-      const queryStream = extractStreamFromQueryParams(resolved);
-      if (queryStream) return queryStream;
-
-      if (isPurePlayerUrl(resolved)) {
-        return {
-          type: "iframe",
-          url: resolved,
-          sandbox: true,
-          extractedMethod: "Khung trình phát (Player)",
-        };
-      }
-    } catch {}
-  }
-
-  return null;
-}
-
-/**
- * Clean movie slug and episode number from ANY Vietnamese movie URL
- * Supports Rophim (e.g. /xem-phim/ga-kim-thoa.p12345?ep=2), Motchill, Phimmoi, Subnhanh, etc.
- */
 function extractMovieSlugAndEpisode(urlStr) {
   try {
     const u = new URL(urlStr);
 
     let episodeNum = 1;
-    // Check query params ?ep=2, ?tap=2, ?episode=2
     const epQuery =
       u.searchParams.get("ep") ||
       u.searchParams.get("tap") ||
@@ -417,6 +656,9 @@ function extractMovieSlugAndEpisode(urlStr) {
       "thuyet-minh",
       "quoc-gia",
       "the-loai",
+      "v",
+      "e",
+      "play",
     ]);
 
     const meaningful = segments.filter(
@@ -427,12 +669,11 @@ function extractMovieSlugAndEpisode(urlStr) {
     if (meaningful.length === 0) return null;
 
     let rawSlug = meaningful[meaningful.length - 1];
-    // 1. Strip Rophim's .XXXXX ID suffix (e.g. "ga-kim-thoa.AbCdEf" -> "ga-kim-thoa")
     rawSlug = rawSlug.split(".")[0];
-    // 2. Strip "-tap-1..." suffix
     rawSlug = rawSlug.replace(/-(?:tap|ep|episode)-\d+.*$/i, "");
-    // 3. Also create a version without trailing numeric ID (e.g. "ga-kim-thoa-18492" -> "ga-kim-thoa")
-    const slugWithoutTrailingId = rawSlug.replace(/-[a-z0-9]{5,}$/i, "").replace(/-\d{3,}$/, "");
+    const slugWithoutTrailingId = rawSlug
+      .replace(/-[a-z0-9]{6,}$/i, "")
+      .replace(/-\d{3,}$/, "");
 
     return {
       slug: rawSlug,
@@ -444,13 +685,11 @@ function extractMovieSlugAndEpisode(urlStr) {
   }
 }
 
-/**
- * Parse NguonC API response format (phim.nguonc.com)
- */
 function pickEpisodeFromNguonCData(data, episodeNum = 1) {
   const movie = data?.movie;
   const episodesGroups = movie?.episodes;
-  if (!Array.isArray(episodesGroups) || episodesGroups.length === 0) return null;
+  if (!Array.isArray(episodesGroups) || episodesGroups.length === 0)
+    return null;
 
   const items = episodesGroups[0]?.items;
   if (!Array.isArray(items) || items.length === 0) return null;
@@ -476,7 +715,9 @@ function pickEpisodeFromNguonCData(data, episodeNum = 1) {
       type: "hls",
       url: matchedEp.m3u8,
       sandbox: false,
-      movieTitle: `${movie.name || "Phim"} — Tập ${matchedEp.name || episodeNum}`,
+      movieTitle: `${movie.name || "Phim"} — Tập ${
+        matchedEp.name || episodeNum
+      }`,
       episodes: allEpisodes,
       currentEpisodeIndex: items.indexOf(matchedEp),
       extractedMethod: "Luồng video thuần (.m3u8)",
@@ -488,7 +729,9 @@ function pickEpisodeFromNguonCData(data, episodeNum = 1) {
     if (queryStream) {
       return {
         ...queryStream,
-        movieTitle: `${movie.name || "Phim"} — Tập ${matchedEp.name || episodeNum}`,
+        movieTitle: `${movie.name || "Phim"} — Tập ${
+          matchedEp.name || episodeNum
+        }`,
         episodes: allEpisodes,
         currentEpisodeIndex: items.indexOf(matchedEp),
       };
@@ -496,8 +739,11 @@ function pickEpisodeFromNguonCData(data, episodeNum = 1) {
     return {
       type: "iframe",
       url: matchedEp.embed,
+      isPurePlayer: true,
       sandbox: true,
-      movieTitle: `${movie.name || "Phim"} — Tập ${matchedEp.name || episodeNum}`,
+      movieTitle: `${movie.name || "Phim"} — Tập ${
+        matchedEp.name || episodeNum
+      }`,
       episodes: allEpisodes,
       currentEpisodeIndex: items.indexOf(matchedEp),
       extractedMethod: "Khung trình phát (Player)",
@@ -560,6 +806,7 @@ function pickEpisodeFromApiData(data, episodeNum = 1) {
     return {
       type: "iframe",
       url: matchedEp.link_embed,
+      isPurePlayer: true,
       sandbox: true,
       movieTitle: `${movieInfo?.name || "Phim"} — ${matchedEp.name || ""}`,
       episodes: allEpisodes,
@@ -571,10 +818,6 @@ function pickEpisodeFromApiData(data, episodeNum = 1) {
   return null;
 }
 
-/**
- * Query KKPhim (phimapi.com), OPhim (ophim1.com), and NguonC (phim.nguonc.com)
- * by slug or keyword to get a 100% pure video stream!
- */
 export async function lookupMovieStreamBySlugOrKeyword(
   slugOrQuery,
   episodeNum = 1
@@ -586,7 +829,6 @@ export async function lookupMovieStreamBySlugOrKeyword(
     .replace(/\s+/g, "-")
     .replace(/[^a-z0-9-]/g, "");
 
-  // 1. Direct slug lookup across all 3 CDNs in parallel
   if (cleanSlug.length >= 2 && !slugOrQuery.includes(" ")) {
     try {
       const results = await Promise.allSettled([
@@ -615,11 +857,9 @@ export async function lookupMovieStreamBySlugOrKeyword(
     } catch {}
   }
 
-  // 2. Keyword search across KKPhim, OPhim, and NguonC
   const keyword = slugOrQuery.replace(/-/g, " ").trim();
   if (keyword.length < 2) return null;
 
-  // 2a. KKPhim search
   try {
     const searchRes = await fetch(
       `https://phimapi.com/v1/api/tim-kiem?keyword=${encodeURIComponent(
@@ -642,7 +882,6 @@ export async function lookupMovieStreamBySlugOrKeyword(
     }
   } catch {}
 
-  // 2b. NguonC search
   try {
     const searchRes = await fetch(
       `https://phim.nguonc.com/api/films/search?keyword=${encodeURIComponent(
@@ -659,29 +898,6 @@ export async function lookupMovieStreamBySlugOrKeyword(
         if (detailRes.ok) {
           const detailData = await detailRes.json();
           const parsed = pickEpisodeFromNguonCData(detailData, episodeNum);
-          if (parsed) return parsed;
-        }
-      }
-    }
-  } catch {}
-
-  // 2c. OPhim search
-  try {
-    const searchRes = await fetch(
-      `https://ophim1.com/v1/api/tim-kiem?keyword=${encodeURIComponent(
-        keyword
-      )}&limit=5`
-    );
-    if (searchRes.ok) {
-      const searchData = await searchRes.json();
-      const items = searchData?.data?.items || [];
-      if (items.length > 0 && items[0].slug) {
-        const detailRes = await fetch(
-          `https://ophim1.com/phim/${items[0].slug}`
-        );
-        if (detailRes.ok) {
-          const detailData = await detailRes.json();
-          const parsed = pickEpisodeFromApiData(detailData, episodeNum);
           if (parsed) return parsed;
         }
       }
@@ -759,14 +975,13 @@ export async function searchMoviesByKeyword(keyword) {
 }
 
 /**
- * Master function: Resolves ANY user input to ONLY a pure video stream or pure player!
- * NEVER returns a full webpage URL.
+ * Universal Video Resolver:
+ * Works with ANY website URL pasted by the user and isolates ONLY the video!
  */
 export async function resolvePureVideoMedia(rawInput) {
   if (!rawInput || !rawInput.trim()) return null;
   const trimmed = rawInput.trim();
 
-  // Prevent user from accidentally pasting the CineParty invite URL itself into the movie box
   if (
     trimmed.includes("khiem292.github.io/cineparty") ||
     (typeof window !== "undefined" &&
@@ -775,18 +990,17 @@ export async function resolvePureVideoMedia(rawInput) {
   ) {
     return {
       error:
-        "Bạn vừa dán link mời phòng CineParty! Hãy dán link bộ phim cần xem hoặc bấm nút Tìm Phim nhé.",
+        "Bạn vừa dán link mời phòng CineParty! Hãy dán link bộ phim cần xem vào ô này nhé.",
     };
   }
 
   const looksLikeUrlOrIframe =
     /^https?:\/\//i.test(trimmed) ||
     /<iframe/i.test(trimmed) ||
-    /^[a-z0-9-]+\.(com|net|org|vn|io|tv|me|cc|to|xyz|info|biz|top|club|site|online|pro|live|stream|watch|video|gg|ly|be|life|cx|co|ink|fm)\b/i.test(
+    /^[a-z0-9-]+\.(com|net|org|vn|io|tv|me|cc|to|xyz|info|biz|top|club|site|online|pro|live|stream|watch|video|gg|ly|be|life|cx|co|ink|fm|phim|sh|ws|ru|uk|us|jp|kr|cn)\b/i.test(
       trimmed
     );
 
-  // If user typed a movie name directly (e.g. "Gả Kim Thoa tập 2")
   if (!looksLikeUrlOrIframe) {
     let epNum = 1;
     const epMatch = trimmed.match(/(?:tập|tap|ep)\s*(\d+)/i);
@@ -804,9 +1018,6 @@ export async function resolvePureVideoMedia(rawInput) {
         ...byKeyword,
       };
     }
-    return {
-      error: `Không tìm thấy phim "${cleanKeyword}". Hãy thử bấm nút Tìm Phim ở góc trên nhé!`,
-    };
   }
 
   const basic = parseMediaInput(trimmed);
@@ -830,12 +1041,15 @@ export async function resolvePureVideoMedia(rawInput) {
     };
   }
 
-  // 3. Check if user explicitly pasted an <iframe src="..."> tag or a known pure player URL
-  if (/<iframe[^>]+src=/i.test(rawInput) || isPurePlayerUrl(basic.url)) {
-    return basic;
+  // 3. Check if user explicitly pasted an <iframe src="..."> tag
+  if (/<iframe[^>]+src=/i.test(rawInput)) {
+    return {
+      ...basic,
+      isPurePlayer: true,
+    };
   }
 
-  // 4. Check known platforms (Google Drive, Vimeo, Dailymotion, Ok.ru, Bilibili, Facebook Video, Streamtape...)
+  // 4. Convert known platforms (Google Drive, Vimeo, Dailymotion, Ok.ru, Bilibili, TikTok, Twitch, Facebook Video, Streamtape...)
   const platformPlayer = convertKnownPlatformToPlayerUrl(basic.url);
   if (platformPlayer) {
     return {
@@ -844,47 +1058,56 @@ export async function resolvePureVideoMedia(rawInput) {
     };
   }
 
-  // 5. Extract movie slug & episode from the movie website URL (Rophim, Motchill, Phimmoi, etc.)
+  // 5. Scrape the target webpage HTML AND check public HLS stream databases in parallel!
   const slugInfo = extractMovieSlugAndEpisode(basic.url);
-  if (slugInfo) {
-    // Try cleanSlug first (e.g. "ga-kim-thoa")
-    const byCleanSlug = await lookupMovieStreamBySlugOrKeyword(
-      slugInfo.cleanSlug,
-      slugInfo.episodeNum
-    );
-    if (byCleanSlug) {
-      return {
-        ...basic,
-        ...byCleanSlug,
-      };
-    }
-    if (slugInfo.slug !== slugInfo.cleanSlug) {
-      const byRawSlug = await lookupMovieStreamBySlugOrKeyword(
-        slugInfo.slug,
-        slugInfo.episodeNum
-      );
-      if (byRawSlug) {
-        return {
-          ...basic,
-          ...byRawSlug,
-        };
-      }
-    }
-  }
 
-  // 6. Scrape the webpage HTML via CORS proxy:
-  //    a) Check for direct .m3u8 / .mp4 / pure player iframe inside HTML
-  //    b) Extract the Vietnamese/English movie title from <title> / og:title and search the 3 Movie APIs!
-  const html = await fetchHtmlViaProxy(basic.url);
+  const [html, slugStream] = await Promise.all([
+    fetchHtmlViaProxy(basic.url),
+    slugInfo
+      ? lookupMovieStreamBySlugOrKeyword(
+          slugInfo.cleanSlug,
+          slugInfo.episodeNum
+        )
+      : Promise.resolve(null),
+  ]);
+
+  // 5a. If webpage HTML has a direct .m3u8, .mp4, <video>, og:video, or inner player <iframe>, use it!
   if (html) {
     const extracted = extractVideoFromHtml(html, basic.url);
     if (extracted) {
+      // If extracted is an inner iframe, check if that inner iframe has a raw .m3u8/.mp4
+      if (extracted.type === "iframe" && extracted.url) {
+        const innerHtml = await fetchHtmlViaProxy(extracted.url);
+        if (innerHtml) {
+          const innerExtracted = extractVideoFromHtml(innerHtml, extracted.url);
+          if (
+            innerExtracted &&
+            (innerExtracted.type === "hls" || innerExtracted.type === "video")
+          ) {
+            return {
+              ...basic,
+              ...innerExtracted,
+            };
+          }
+        }
+      }
       return {
         ...basic,
         ...extracted,
       };
     }
+  }
 
+  // 5b. If slug matched a pure .m3u8 stream on CDN, use it!
+  if (slugStream) {
+    return {
+      ...basic,
+      ...slugStream,
+    };
+  }
+
+  // 5c. If HTML was fetched, try matching movie title from <title> / og:title on CDN
+  if (html) {
     const titleCandidates = extractTitleCandidatesFromHtml(html);
     const epNum = slugInfo?.episodeNum || 1;
     for (const candidate of titleCandidates) {
@@ -898,10 +1121,13 @@ export async function resolvePureVideoMedia(rawInput) {
     }
   }
 
-  // NEVER return the full webpage in an iframe!
+  // 6. Universal fallback for ANY website URL:
+  //    Return the URL with `autoIsolateVideo: true` so the player viewport automatically
+  //    isolates/crops to ONLY the video player region (hiding the website's header, menu, sidebar, and footer)!
   return {
-    error:
-      "Trang web này khóa mã nguồn video. Bạn hãy nhập thẳng Tên Phim vào ô trên (VD: Gả Kim Thoa) hoặc bấm nút Tìm Phim để phát trực tiếp Video thuần 100% nhé!",
-    suggestedQuery: slugInfo?.cleanSlug?.replace(/-/g, " ") || "",
+    ...basic,
+    isPurePlayer: false,
+    autoIsolateVideo: true,
+    extractedMethod: "Chế độ lọc riêng khung Video từ trang web",
   };
 }

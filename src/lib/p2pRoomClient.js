@@ -174,6 +174,10 @@ export function createP2PRoomClient(roomId) {
         episodes: media.episodes || null,
         currentEpisodeIndex: media.currentEpisodeIndex ?? 0,
         extractedMethod: media.extractedMethod || "",
+        isPurePlayer: Boolean(media.isPurePlayer),
+        autoIsolateVideo: Boolean(media.autoIsolateVideo),
+        cropTop: media.cropTop ?? (media.autoIsolateVideo ? 95 : 0),
+        cropZoom: media.cropZoom ?? (media.autoIsolateVideo ? 1.32 : 1),
       };
       roomState.playback = {
         isPlaying: true,
@@ -207,6 +211,19 @@ export function createP2PRoomClient(roomId) {
       broadcastFromHost("sandbox-toggled", {
         sandbox: roomState.media.sandbox,
         changedBy: user.name,
+      });
+      return;
+    }
+
+    if (event === "update-crop") {
+      if (!roomState.allowAllControl && roomState.hostId !== senderId) return;
+      roomState.media.cropTop = Number(payload?.cropTop ?? 0);
+      roomState.media.cropZoom = Number(payload?.cropZoom ?? 1);
+      roomState.media.autoIsolateVideo = Boolean(payload?.autoIsolateVideo);
+      broadcastFromHost("crop-updated", {
+        cropTop: roomState.media.cropTop,
+        cropZoom: roomState.media.cropZoom,
+        autoIsolateVideo: roomState.media.autoIsolateVideo,
       });
       return;
     }
