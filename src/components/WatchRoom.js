@@ -31,6 +31,7 @@ import {
   searchMoviesByKeyword,
   lookupMovieStreamBySlugOrKeyword,
   appendStartTimeToIframeUrl,
+  fetchAndBuildIsolatedSrcDoc,
 } from "@/lib/videoExtractor";
 import { createP2PRoomClient } from "@/lib/p2pRoomClient";
 import SyncedVideoPlayer from "@/components/SyncedVideoPlayer";
@@ -62,6 +63,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
     cropTop: 95,
     cropZoom: 1.32,
   });
+  const [isolatedSrcDoc, setIsolatedSrcDoc] = useState(null);
   const [playback, setPlayback] = useState({
     isPlaying: true,
     currentTime: 0,
@@ -114,6 +116,52 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
     }
   }, []);
 
+  // Automatically process/sanitize incoming media if it's isolated-html or an unextracted webpage iframe
+  const applyIncomingMedia = async (incomingMedia) => {
+    if (!incomingMedia || incomingMedia.type === "empty") {
+      setIsolatedSrcDoc(null);
+      setMedia(
+        incomingMedia || {
+          type: "empty",
+          url: "",
+          rawInput: "",
+          sandbox: true,
+        }
+      );
+      return;
+    }
+
+    setShowMobileUrlBar(false);
+
+    // If incoming media is an unextracted webpage iframe (from an older tab or fallback), try extracting pure video on this device too!
+    if (
+      incomingMedia.type === "iframe" &&
+      !incomingMedia.isPurePlayer &&
+      incomingMedia.url
+    ) {
+      setIsExtracting(true);
+      const better = await resolvePureVideoMedia(incomingMedia.url);
+      setIsExtracting(false);
+      if (better && !better.error && (better.isPurePlayer || better.type !== "iframe")) {
+        incomingMedia = {
+          ...incomingMedia,
+          ...better,
+        };
+      }
+    }
+
+    if (incomingMedia.type === "isolated-html" && incomingMedia.url) {
+      setIsExtracting(true);
+      const doc = await fetchAndBuildIsolatedSrcDoc(incomingMedia.url);
+      setIsExtracting(false);
+      setIsolatedSrcDoc(doc);
+    } else {
+      setIsolatedSrcDoc(null);
+    }
+
+    setMedia(incomingMedia);
+  };
+
   useEffect(() => {
     if (!username) return;
 
@@ -149,11 +197,9 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
         rawInput: "",
         sandbox: true,
       };
-      setMedia(nextMedia);
-      if (nextMedia.type !== "empty") {
-        setShowMobileUrlBar(false);
-      }
       setUrlInput(nextMedia?.rawInput || nextMedia?.url || "");
+      applyIncomingMedia(nextMedia);
+
       const incomingPlayback = state.playback || {
         isPlaying: true,
         currentTime: 0,
@@ -184,8 +230,8 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
         screenSharerId: sharerId,
         screenSharerName: sharerName,
       }) => {
-        setMedia(newMedia);
         setUrlInput(newMedia.rawInput || newMedia.url || "");
+        applyIncomingMedia(newMedia);
         setPlayback({
           ...newPlayback,
           updatedAt: Date.now(),
@@ -194,9 +240,6 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
         setIframeStartOffset(0);
         setScreenSharerId(sharerId || null);
         setScreenSharerName(sharerName || null);
-        if (newMedia.type !== "empty") {
-          setShowMobileUrlBar(false);
-        }
       }
     );
 
@@ -1027,7 +1070,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                   className="url-input"
                   placeholder={
                     canControl
-                      ? "Dán link phim từ BẤT KỲ trang web nào (hoặc nhập tên phim) — tự động chỉ hiện khung Video..."
+                      ? "Dán link phim từ BẤT KỲ trang web nào (tự động xóa quảng cáo & chỉ lấy riêng khung Video)..."
                       : "Chỉ Chủ phòng mới đổi được phim"
                   }
                   value={urlInput}
@@ -1047,7 +1090,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
               >
                 {isExtracting ? <Loader2 size={14} /> : <Play size={14} />}
                 <span>
-                  {isExtracting ? "Đang tách video..." : "Phát Video"}
+                  {isExtracting ? "Đang lọc video..." : "Phát Video"}
                 </span>
               </button>
             </form>
@@ -1091,7 +1134,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                   style={{ marginBottom: "12px" }}
                 />
                 <h3 style={{ fontSize: "1.05rem", marginBottom: "6px" }}>
-                  Đang tự động tách riêng khung Video từ link của bạn...
+                  Đang tự động xóa quảng cáo & tách riêng khung Video...
                 </h3>
                 <p
                   style={{
@@ -1143,8 +1186,8 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                   }}
                 >
                   Dán link phim từ <strong>bất kỳ trang web nào</strong> lên ô
-                  phía trên. Hệ thống sẽ tự động tách lấy riêng phần Video để
-                  hiển thị gọn trong khung này!
+                  phía trên. Hệ thống sẽ tự động xóa bỏ hoàn toàn quảng cáo che
+                  màn hình và chỉ lấy riêng phần Video!
                 </p>
 
                 <div
@@ -1211,6 +1254,19 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
               />
             )}
 
+            {media.type === "isolated-html" && isolatedSrcDoc && (
+              <iframe
+                key={media.url}
+                ref={iframeRef}
+                srcDoc={isolatedSrcDoc}
+                className="player-iframe"
+                scrolling="no"
+                allow="autoplay; fullscreen; picture-in-picture; encrypted-media"
+                allowFullScreen
+                sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"
+              />
+            )}
+
             {media.type === "iframe" && effectiveIframeUrl && (
               <div
                 style={{
@@ -1252,8 +1308,7 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                     : {})}
                 />
 
-                {/* Subtle Floating Frame Adjuster for any external site */}
-                {canControl && (
+                {canControl && !media.isPurePlayer && (
                   <div
                     style={{
                       position: "absolute",
@@ -1284,7 +1339,6 @@ export default function WatchRoom({ roomId: rawRoomId, onLeaveRoom }) {
                         gap: "5px",
                         fontWeight: 600,
                       }}
-                      title="Căn chỉnh khung cắt video"
                     >
                       <Crop size={13} color="#22d3ee" />
                       <span>Canh khung Video</span>

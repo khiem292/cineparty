@@ -10,11 +10,19 @@ const IGNORED_IFRAME_PATTERNS = [
   /doubleclick\.net/i,
   /googlesyndication\.com/i,
   /exoclick/i,
+  /juicyads/i,
+  /trafficjunky/i,
+  /plugrush/i,
   /adsterra/i,
   /popads/i,
   /propellerads/i,
+  /a-ads\.com/i,
+  /magsrv\.com/i,
+  /realsrv\.com/i,
+  /syndication\.realsrv/i,
   /about:blank/i,
-  /javascript:/i,
+  /^data:/i,
+  /^javascript:/i,
   /twitter\.com\/widgets/i,
   /accounts\.google\.com/i,
 ];
@@ -48,6 +56,21 @@ const PLAYER_IFRAME_KEYWORDS = [
   "odysee",
   "twitch",
   "tiktok",
+  "jav",
+  "vlxx",
+  "sex",
+  "xvideos",
+  "pornhub",
+  "xnxx",
+  "spankbang",
+  "eporner",
+  "streamlare",
+  "voe",
+  "lulustream",
+  "turboviplay",
+  "vtube",
+  "fastplay",
+  "helvid",
 ];
 
 export function appendStartTimeToIframeUrl(urlStr, seconds) {
@@ -117,7 +140,6 @@ export function convertKnownPlatformToPlayerUrl(urlStr) {
     const u = new URL(urlStr);
     const host = u.hostname.toLowerCase();
 
-    // Google Drive
     if (host.includes("drive.google.com")) {
       const match = u.pathname.match(/\/file\/d\/([^/]+)/);
       if (match && match[1]) {
@@ -130,7 +152,6 @@ export function convertKnownPlatformToPlayerUrl(urlStr) {
       }
     }
 
-    // Vimeo
     if (host === "vimeo.com" || host === "www.vimeo.com") {
       const match = u.pathname.match(/^\/(\d+)/);
       if (match && match[1]) {
@@ -143,7 +164,6 @@ export function convertKnownPlatformToPlayerUrl(urlStr) {
       }
     }
 
-    // Dailymotion
     if (host.includes("dailymotion.com")) {
       const match = u.pathname.match(/\/video\/([a-zA-Z0-9]+)/);
       if (match && match[1]) {
@@ -167,7 +187,6 @@ export function convertKnownPlatformToPlayerUrl(urlStr) {
       }
     }
 
-    // Ok.ru
     if (host.includes("ok.ru")) {
       const match = u.pathname.match(/\/video\/(\d+)/);
       if (match && match[1]) {
@@ -180,7 +199,6 @@ export function convertKnownPlatformToPlayerUrl(urlStr) {
       }
     }
 
-    // Bilibili
     if (host.includes("bilibili.com")) {
       const match = u.pathname.match(/\/video\/(BV[a-zA-Z0-9]+)/i);
       if (match && match[1]) {
@@ -204,7 +222,6 @@ export function convertKnownPlatformToPlayerUrl(urlStr) {
       }
     }
 
-    // TikTok video: https://www.tiktok.com/@user/video/123456789
     if (host.includes("tiktok.com")) {
       const match = u.pathname.match(/\/video\/(\d+)/);
       if (match && match[1]) {
@@ -217,7 +234,6 @@ export function convertKnownPlatformToPlayerUrl(urlStr) {
       }
     }
 
-    // Twitch channel or video
     if (host.includes("twitch.tv")) {
       const parentHost =
         typeof window !== "undefined" ? window.location.hostname : "localhost";
@@ -241,7 +257,6 @@ export function convertKnownPlatformToPlayerUrl(urlStr) {
       }
     }
 
-    // Facebook video
     if (
       (host.includes("facebook.com") || host.includes("fb.watch")) &&
       (u.pathname.includes("/videos/") ||
@@ -258,7 +273,6 @@ export function convertKnownPlatformToPlayerUrl(urlStr) {
       };
     }
 
-    // Streamtape / Doodstream / Filemoon / Mixdrop / Lulustream / Voe
     if (
       host.includes("streamtape") ||
       host.includes("dood") ||
@@ -281,7 +295,7 @@ export function convertKnownPlatformToPlayerUrl(urlStr) {
 }
 
 /**
- * Race multiple CORS proxies in parallel so webpage HTML fetching is fast and reliable
+ * Race 4 public CORS proxies in parallel so fetching HTML from ANY site succeeds reliably
  */
 async function fetchHtmlViaProxy(targetUrl) {
   const proxyBuilders = [
@@ -296,9 +310,27 @@ async function fetchHtmlViaProxy(targetUrl) {
     },
     async () => {
       const r = await fetch(
+        `https://api.allorigins.win/raw?url=${encodeURIComponent(targetUrl)}`
+      );
+      if (!r.ok) throw new Error("Failed");
+      const text = await r.text();
+      if (!text || text.length < 100) throw new Error("Empty");
+      return text;
+    },
+    async () => {
+      const r = await fetch(
         `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(
           targetUrl
         )}`
+      );
+      if (!r.ok) throw new Error("Failed");
+      const text = await r.text();
+      if (!text || text.length < 100) throw new Error("Empty");
+      return text;
+    },
+    async () => {
+      const r = await fetch(
+        `https://corsproxy.io/?url=${encodeURIComponent(targetUrl)}`
       );
       if (!r.ok) throw new Error("Failed");
       const text = await r.text();
@@ -309,7 +341,7 @@ async function fetchHtmlViaProxy(targetUrl) {
 
   try {
     const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("Timeout")), 5500)
+      setTimeout(() => reject(new Error("Timeout")), 6500)
     );
     return await Promise.race([
       Promise.any(proxyBuilders.map((fn) => fn())),
@@ -321,15 +353,15 @@ async function fetchHtmlViaProxy(targetUrl) {
 }
 
 /**
- * Build an isolated HTML document (`srcdoc`) from a webpage's HTML that hides ALL webpage UI
- * (headers, menus, footers, comments, ads) and forces ONLY the video player element to fill 100% of the box!
+ * Build a sanitized, ad-free, video-isolated HTML document (`srcDoc`) from a webpage's HTML.
+ * Physically strips popup ads, banners, headers, menus, footers, and locks ONLY the video player to 100vw x 100vh!
  */
 export function buildIsolatedVideoSrcDoc(html, originalUrl) {
   if (!html) return null;
   let originUrl = originalUrl;
   try {
     const u = new URL(originalUrl);
-    originUrl = `${u.origin}${u.pathname.replace(/\/[^/]*$/, "/")}`;
+    originUrl = `${u.origin}/`;
   } catch {}
 
   const isolatorInjection = `
@@ -343,11 +375,18 @@ export function buildIsolatedVideoSrcDoc(html, originalUrl) {
     overflow: hidden !important;
     background: #000 !important;
   }
+  /* Hide all website chrome, menus, headers, footers, comments, and popup ad containers */
   header, nav, footer, aside,
   .header, .navbar, .nav, .footer, .sidebar, .comments, .comment-section,
-  .related-movies, .movie-info, .breadcrumb, .ads, .banner,
+  .related-movies, .movie-info, .breadcrumb, .ads, .banner, .popup, .modal,
+  [class*="popup"], [class*="modal"], [class*="banner"], [class*="quang-cao"], [class*="qc-"],
+  [id*="popup"], [id*="modal"], [id*="banner"], [id*="quang-cao"], [id*="qc-"],
   #header, #navbar, #footer, #sidebar, #comments {
     display: none !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    width: 0 !important;
+    height: 0 !important;
   }
   .cineparty-isolated-target {
     position: fixed !important;
@@ -365,6 +404,10 @@ export function buildIsolatedVideoSrcDoc(html, originalUrl) {
     background: #000 !important;
     border: none !important;
     transform: none !important;
+    display: block !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
   }
 </style>
 <script>
@@ -375,50 +418,92 @@ export function buildIsolatedVideoSrcDoc(html, originalUrl) {
     'iframe[src*="embed"]',
     'iframe[src*="player"]',
     'iframe[src*="stream"]',
+    'iframe[data-src]',
+    'iframe[data-litespeed-src]',
     '.jwplayer',
     '.artplayer-app',
     '.plyr',
     '.video-js',
     '.dplayer',
+    '.fluid_video_wrapper',
     '#player',
     '#video-player',
     '#watch-player',
     '#media-player',
     '.player-wrapper',
+    '.responsive-player',
     '.video-container',
     '.watch-player',
     '[id*="player"]',
     '[class*="player-container"]'
   ];
 
-  function isolatePlayer() {
+  function nukeAdsAndIsolatePlayer() {
+    // 1. Activate lazy-loaded iframes if present
+    document.querySelectorAll('iframe').forEach((ifr) => {
+      const lazySrc =
+        ifr.getAttribute('data-litespeed-src') ||
+        ifr.getAttribute('data-lazy-src') ||
+        ifr.getAttribute('data-src');
+      if (lazySrc && (!ifr.src || ifr.src === 'about:blank' || ifr.src.startsWith('data:'))) {
+        ifr.src = lazySrc;
+      }
+    });
+
+    // 2. Find the main video/player element
+    let targetPlayer = null;
     for (const sel of SELECTORS) {
       const els = document.querySelectorAll(sel);
       for (const el of els) {
         const rect = el.getBoundingClientRect();
-        if (el.tagName === 'VIDEO' || el.tagName === 'IFRAME' || (rect.width >= 200 && rect.height >= 120)) {
-          if (!el.classList.contains('cineparty-isolated-target')) {
-            el.classList.add('cineparty-isolated-target');
-          }
-          // Ensure all parent ancestors are visible and unclipped
-          let p = el.parentElement;
-          while (p && p !== document.body && p !== document.documentElement) {
-            p.style.setProperty('display', 'block', 'important');
-            p.style.setProperty('visibility', 'visible', 'important');
-            p.style.setProperty('opacity', '1', 'important');
-            p.style.setProperty('overflow', 'visible', 'important');
-            p.style.setProperty('transform', 'none', 'important');
-            p = p.parentElement;
-          }
-          return;
+        if (
+          el.tagName === 'VIDEO' ||
+          el.tagName === 'IFRAME' ||
+          (rect.width >= 180 && rect.height >= 100)
+        ) {
+          targetPlayer = el;
+          break;
         }
       }
+      if (targetPlayer) break;
+    }
+
+    if (targetPlayer) {
+      if (!targetPlayer.classList.contains('cineparty-isolated-target')) {
+        targetPlayer.classList.add('cineparty-isolated-target');
+      }
+      // Keep ancestors visible and unclipped, and hide all non-ancestor fixed overlays (popup ads!)
+      const ancestors = new Set();
+      let p = targetPlayer;
+      while (p) {
+        ancestors.add(p);
+        if (p !== targetPlayer && p !== document.body && p !== document.documentElement) {
+          p.style.setProperty('display', 'block', 'important');
+          p.style.setProperty('visibility', 'visible', 'important');
+          p.style.setProperty('opacity', '1', 'important');
+          p.style.setProperty('overflow', 'visible', 'important');
+          p.style.setProperty('transform', 'none', 'important');
+        }
+        p = p.parentElement;
+      }
+
+      // Remove any fixed/absolute overlay or ad image that is NOT an ancestor or descendant of targetPlayer
+      document.querySelectorAll('body *').forEach((node) => {
+        if (ancestors.has(node) || targetPlayer.contains(node)) return;
+        const style = window.getComputedStyle(node);
+        if (
+          style.position === 'fixed' ||
+          (style.position === 'absolute' && parseInt(style.zIndex || '0', 10) > 50)
+        ) {
+          node.remove();
+        }
+      });
     }
   }
 
-  setInterval(isolatePlayer, 350);
-  window.addEventListener('DOMContentLoaded', isolatePlayer);
-  window.addEventListener('load', isolatePlayer);
+  setInterval(nukeAdsAndIsolatePlayer, 250);
+  window.addEventListener('DOMContentLoaded', nukeAdsAndIsolatePlayer);
+  window.addEventListener('load', nukeAdsAndIsolatePlayer);
 })();
 </script>
 `;
@@ -430,47 +515,52 @@ export function buildIsolatedVideoSrcDoc(html, originalUrl) {
 }
 
 /**
- * Scan webpage HTML for any direct video stream (.m3u8, .mp4, <video>, og:video) or inner player <iframe>
+ * Scan webpage HTML for any direct video stream (.m3u8, .mp4, <video>, og:video, schema itemprop)
+ * or inner video player <iframe> (including lazy-loaded iframes and Base64/MacCMS configs!)
  */
 function extractVideoFromHtml(html, baseUrl) {
   if (!html) return null;
 
   const unescaped = html.replace(/\\\//g, "/");
 
-  // 1. Check OpenGraph / Twitter Player meta tags (<meta property="og:video" ...>)
-  const ogVideoMatch = html.match(
-    /<meta[^>]+(?:property|name)=["'](?:og:video|og:video:url|og:video:secure_url|twitter:player|twitter:player:stream)["'][^>]+content=["']([^"']+)["']/i
-  );
-  if (ogVideoMatch && ogVideoMatch[1]) {
+  // 1. Check Schema.org / OpenGraph / Twitter Player meta tags (itemprop="contentUrl", itemprop="embedUrl", og:video)
+  const metaRegex =
+    /<meta[^>]+(?:property|name|itemprop)=["'](?:og:video|og:video:url|og:video:secure_url|twitter:player|twitter:player:stream|contentUrl|embedUrl)["'][^>]+content=["']([^"']+)["']/gi;
+  let metaMatch;
+  while ((metaMatch = metaRegex.exec(html)) !== null) {
     try {
-      const resolvedOg = new URL(ogVideoMatch[1].trim(), baseUrl).href;
-      if (/\.m3u8(\?.*)?$/i.test(resolvedOg)) {
+      const candidateUrl = metaMatch[1].trim();
+      if (!candidateUrl || IGNORED_IFRAME_PATTERNS.some((p) => p.test(candidateUrl))) {
+        continue;
+      }
+      const resolvedMeta = new URL(candidateUrl, baseUrl).href;
+      if (/\.m3u8(\?.*)?$/i.test(resolvedMeta)) {
         return {
           type: "hls",
-          url: resolvedOg,
+          url: resolvedMeta,
           sandbox: false,
           extractedMethod: "Luồng video gốc (.m3u8)",
         };
       }
-      if (/\.(mp4|webm)(\?.*)?$/i.test(resolvedOg)) {
+      if (/\.(mp4|webm)(\?.*)?$/i.test(resolvedMeta)) {
         return {
           type: "video",
-          url: resolvedOg,
+          url: resolvedMeta,
           sandbox: false,
           extractedMethod: "File video gốc (.mp4)",
         };
       }
       return {
         type: "iframe",
-        url: resolvedOg,
+        url: resolvedMeta,
         isPurePlayer: true,
         sandbox: true,
-        extractedMethod: "Trình phát gốc (Meta Player)",
+        extractedMethod: "Trình phát gốc (Player)",
       };
     } catch {}
   }
 
-  // 2. Direct .m3u8 stream URLs in HTML or scripts
+  // 2. Direct .m3u8 stream URLs in HTML or inline scripts
   const m3u8Regex = /(https?:\/\/[^\s"'<>\\]+\.m3u8(?:\?[^\s"'<>\\]*)?)/gi;
   const m3u8Matches = [...unescaped.matchAll(m3u8Regex)].map((m) => m[1]);
   if (m3u8Matches.length > 0) {
@@ -486,7 +576,7 @@ function extractVideoFromHtml(html, baseUrl) {
 
   // 3. Direct <video src="..."> or <source src="..."> tags in HTML
   const videoTagMatch = html.match(
-    /<(?:video|source)[^>]+src=["']([^"']+\.(?:mp4|webm|m3u8)[^"']*)["']/i
+    /<(?:video|source)[^>]+(?:src|data-src)=["']([^"']+\.(?:mp4|webm|m3u8)[^"']*)["']/i
   );
   if (videoTagMatch && videoTagMatch[1]) {
     try {
@@ -504,7 +594,13 @@ function extractVideoFromHtml(html, baseUrl) {
   const mp4Regex = /(https?:\/\/[^\s"'<>\\]+\.mp4(?:\?[^\s"'<>\\]*)?)/gi;
   const mp4Matches = [...unescaped.matchAll(mp4Regex)]
     .map((m) => m[1])
-    .filter((u) => !u.includes("ad") && !u.includes("banner"));
+    .filter(
+      (u) =>
+        !u.includes("ad") &&
+        !u.includes("banner") &&
+        !u.includes("tx88") &&
+        !u.includes(" gif")
+    );
   if (mp4Matches.length > 0) {
     return {
       type: "video",
@@ -514,7 +610,7 @@ function extractVideoFromHtml(html, baseUrl) {
     };
   }
 
-  // 5. Look for player embed URLs in JSON configs (link_embed, embed_url, iframe_url, player_url, embedUrl)
+  // 5. Look for player embed URLs in JSON configs (link_embed, embed_url, player_aaaa, iframe_url, player_url, video_url)
   const embedJsonMatch = unescaped.match(
     /"(?:link_embed|embed_url|embedUrl|iframe_url|player_url|video_url|stream_url)"\s*:\s*"(https?:\/\/[^"]+)"/i
   );
@@ -531,17 +627,36 @@ function extractVideoFromHtml(html, baseUrl) {
     };
   }
 
-  // 6. Any <iframe src="..."> inside the webpage (excluding ads/comments)
-  const iframeRegex = /<iframe[^>]+(?:src|data-src|data-lazy-src)=["']([^"']+)["'][^>]*>/gi;
+  // 6. Inspect ALL <iframe ...> tags in HTML (properly supporting lazy-load attributes like data-litespeed-src, data-lazy-src, data-src!)
+  const iframeTagRegex = /<iframe\b[^>]*>/gi;
   const candidates = [];
-  let match;
-  while ((match = iframeRegex.exec(html)) !== null) {
-    let src = match[1].trim();
-    if (!src) continue;
-    if (IGNORED_IFRAME_PATTERNS.some((pat) => pat.test(src))) continue;
+  let tagMatch;
+  while ((tagMatch = iframeTagRegex.exec(html)) !== null) {
+    const tagStr = tagMatch[0];
+    // Extract all candidate src attributes in priority order (lazy attributes first, then src)
+    const attrNames = [
+      "data-litespeed-src",
+      "data-lazy-src",
+      "data-src",
+      "data-runner-src",
+      "src",
+    ];
+    let chosenSrc = null;
+    for (const attr of attrNames) {
+      const m = tagStr.match(new RegExp(`\\b${attr}=["']([^"']+)["']`, "i"));
+      if (m && m[1]) {
+        const val = m[1].trim();
+        if (val && !IGNORED_IFRAME_PATTERNS.some((pat) => pat.test(val))) {
+          chosenSrc = val;
+          break;
+        }
+      }
+    }
+
+    if (!chosenSrc) continue;
 
     try {
-      const resolved = new URL(src, baseUrl).href;
+      const resolved = new URL(chosenSrc, baseUrl).href;
       const queryStream = extractStreamFromQueryParams(resolved);
       if (queryStream) return queryStream;
 
@@ -550,7 +665,7 @@ function extractVideoFromHtml(html, baseUrl) {
       for (const kw of PLAYER_IFRAME_KEYWORDS) {
         if (lower.includes(kw)) score += 3;
       }
-      if (match[0].toLowerCase().includes("allowfullscreen")) score += 5;
+      if (tagStr.toLowerCase().includes("allowfullscreen")) score += 5;
       candidates.push({ url: resolved, score });
     } catch {}
   }
@@ -562,7 +677,7 @@ function extractVideoFromHtml(html, baseUrl) {
       url: candidates[0].url,
       isPurePlayer: true,
       sandbox: true,
-      extractedMethod: "Khung trình phát video (Player Iframe)",
+      extractedMethod: "Khung trình phát video (Đã lọc bỏ trang web & quảng cáo)",
     };
   }
 
@@ -976,7 +1091,7 @@ export async function searchMoviesByKeyword(keyword) {
 
 /**
  * Universal Video Resolver:
- * Works with ANY website URL pasted by the user and isolates ONLY the video!
+ * Works with ANY website URL pasted by the user and isolates ONLY the video (zero website ads/popups)!
  */
 export async function resolvePureVideoMedia(rawInput) {
   if (!rawInput || !rawInput.trim()) return null;
@@ -997,7 +1112,7 @@ export async function resolvePureVideoMedia(rawInput) {
   const looksLikeUrlOrIframe =
     /^https?:\/\//i.test(trimmed) ||
     /<iframe/i.test(trimmed) ||
-    /^[a-z0-9-]+\.(com|net|org|vn|io|tv|me|cc|to|xyz|info|biz|top|club|site|online|pro|live|stream|watch|video|gg|ly|be|life|cx|co|ink|fm|phim|sh|ws|ru|uk|us|jp|kr|cn)\b/i.test(
+    /^[a-z0-9-]+\.(com|net|org|vn|io|tv|me|cc|to|xyz|info|biz|top|club|site|online|pro|live|stream|watch|video|gg|ly|be|life|cx|co|ink|fm|phim|sh|ws|ru|uk|us|jp|kr|cn|sex|xxx|porn| tube)\b/i.test(
       trimmed
     );
 
@@ -1071,7 +1186,7 @@ export async function resolvePureVideoMedia(rawInput) {
       : Promise.resolve(null),
   ]);
 
-  // 5a. If webpage HTML has a direct .m3u8, .mp4, <video>, og:video, or inner player <iframe>, use it!
+  // 5a. If webpage HTML has a direct .m3u8, .mp4, <video>, og:video, itemprop="embedUrl", or inner player <iframe>, use it!
   if (html) {
     const extracted = extractVideoFromHtml(html, basic.url);
     if (extracted) {
@@ -1119,15 +1234,33 @@ export async function resolvePureVideoMedia(rawInput) {
         };
       }
     }
+
+    // 5d. If it's a custom website whose HTML we fetched, use `buildIsolatedVideoSrcDoc`
+    //     to physically strip out all popup ads (like TX88 banners) and headers, showing ONLY the video player!
+    return {
+      ...basic,
+      type: "isolated-html",
+      url: basic.url,
+      isPurePlayer: true,
+      autoIsolateVideo: false,
+      extractedMethod: "Đã lọc sạch quảng cáo & tách riêng khung Video",
+    };
   }
 
-  // 6. Universal fallback for ANY website URL:
-  //    Return the URL with `autoIsolateVideo: true` so the player viewport automatically
-  //    isolates/crops to ONLY the video player region (hiding the website's header, menu, sidebar, and footer)!
+  // 6. Fallback if proxy couldn't fetch HTML
   return {
     ...basic,
     isPurePlayer: false,
     autoIsolateVideo: true,
-    extractedMethod: "Chế độ lọc riêng khung Video từ trang web",
+    extractedMethod: "Chế độ lọc riêng khung Video",
   };
+}
+
+/**
+ * Helper used by WatchRoom when media.type === 'isolated-html' to fetch & sanitize HTML locally on each client
+ */
+export async function fetchAndBuildIsolatedSrcDoc(url) {
+  const html = await fetchHtmlViaProxy(url);
+  if (!html) return null;
+  return buildIsolatedVideoSrcDoc(html, url);
 }
