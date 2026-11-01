@@ -170,6 +170,10 @@ export function createP2PRoomClient(roomId) {
         url: media.url || "",
         rawInput: media.rawInput || media.url || "",
         sandbox: media.sandbox !== undefined ? media.sandbox : true,
+        movieTitle: media.movieTitle || "",
+        episodes: media.episodes || null,
+        currentEpisodeIndex: media.currentEpisodeIndex ?? 0,
+        extractedMethod: media.extractedMethod || "",
       };
       roomState.playback = {
         isPlaying: false,
